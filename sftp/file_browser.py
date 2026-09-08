@@ -1,54 +1,30 @@
 """
 File browser panel for local and remote SFTP views.
-
-Enhancements over the original:
-  * sortable columns (name / size / modified) with proper numeric ordering
-  * live filter box + "show hidden files" toggle
-  * rich file-type icons by extension
-  * destructive-action confirmation (delete)
-  * keyboard shortcuts (Delete, F5)
-  * safer drag & drop confirmation for bulk transfers
 """
 from __future__ import annotations
 
 import datetime
 import json
 import os
+import subprocess
+import sys
 from typing import Any, Optional
 
-from PyQt6.QtCore import (
-    QByteArray,
-    QMimeData,
-    Qt,
-    QUrl,
-    pyqtSignal,
-)
+from PyQt6.QtCore import QByteArray, QMimeData, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDrag, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QMenu,
-    QMessageBox,
-    QPushButton,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QHBoxLayout, QHeaderView, QInputDialog,
+    QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from admin_suite.sftp.models import SftpAction, SftpTask
 from admin_suite.sftp.worker import SftpWorker
 
-# Custom role for numeric-aware sorting (kept separate from the entry payload).
+# Custom role for numeric-aware sorting
 _ROLE_SORT = Qt.ItemDataRole.UserRole + 1
 
-# --------------------------------------------------------------------------
 # File-type icon map
-# --------------------------------------------------------------------------
 _EXT_ICONS: dict[str, str] = {
     "py": "🐍", "sh": "🐚", "bash": "🐚", "zsh": "🐚",
     "conf": "⚙️", "cfg": "⚙️", "ini": "⚙️", "env": "⚙️",
@@ -68,17 +44,14 @@ _EXT_ICONS: dict[str, str] = {
     "pdf": "📕", "doc": "📘", "docx": "📘", "xls": "📗", "xlsx": "📗",
 }
 
-
 def _icon_for(name: str, is_dir: bool) -> str:
     if is_dir:
         return "📁"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     return _EXT_ICONS.get(ext, "📄")
 
-
 class _SortableItem(QTreeWidgetItem):
     """Tree item that sorts by a stored sort-key instead of display text."""
-
     def __lt__(self, other: QTreeWidgetItem) -> bool:
         widget = self.treeWidget()
         col = widget.sortColumn() if widget is not None else 0
@@ -91,24 +64,19 @@ class _SortableItem(QTreeWidgetItem):
         except TypeError:
             return super().__lt__(other)
 
-
 class FileBrowserPanel(QWidget):
     """Local or remote file browser panel."""
-
     file_action = pyqtSignal(str, str, str)
 
     def __init__(
-        self,
-        services,
-        panel_id: str,
-        mode: str = "local",
+        self, services, panel_id: str, mode: str = "local",
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self.services = services
         self.panel_id = panel_id
         self.mode = mode
-
+        
         if mode == "local":
             default_local = self.services.config.get("sftp_default_local", "")
             if default_local and os.path.isdir(default_local):
@@ -117,71 +85,74 @@ class FileBrowserPanel(QWidget):
                 self.current_path = os.path.expanduser("~")
         else:
             self.current_path = "/"
-
+            
         self.sftp_worker: Optional[SftpWorker] = None
         self.host_info: dict[str, Any] = {}
-
-        # View state used by filter / hidden / sort re-rendering.
+        
+        # View state
         self._entries: list[dict[str, Any]] = []
         self._tag: str = mode
         self._filter_text: str = ""
         self._show_hidden: bool = False
-
+        
         self.setAcceptDrops(True)
         self._drag_start_pos = None
-
+        
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
-
+        
         # ---- path bar ----
         pb = QHBoxLayout()
         up = QPushButton("⬆")
         up.setFixedWidth(30)
         up.setToolTip("Go up one level")
         up.clicked.connect(self.go_up)
+        
         home = QPushButton("🏠")
         home.setFixedWidth(30)
         home.setToolTip("Go to home / root")
         home.clicked.connect(self.go_home)
+        
         rf = QPushButton("🔄")
         rf.setFixedWidth(30)
         rf.setToolTip("Refresh (F5)")
         rf.clicked.connect(self.refresh)
+        
         self.path_input = QLineEdit(self.current_path)
         self.path_input.returnPressed.connect(
             lambda: self.navigate_to_path(self.path_input.text())
         )
+        
         pb.addWidget(up)
         pb.addWidget(home)
         pb.addWidget(rf)
         pb.addWidget(self.path_input, 1)
         layout.addLayout(pb)
-
+        
         # ---- filter / hidden row ----
         fb = QHBoxLayout()
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("🔎 Filter current folder…")
         self.filter_input.setClearButtonEnabled(True)
         self.filter_input.textChanged.connect(self._on_filter_changed)
+        
         self.show_hidden = QCheckBox("Hidden")
         self.show_hidden.setToolTip("Show dot-files")
         self.show_hidden.toggled.connect(self._on_hidden_toggled)
+        
         fb.addWidget(self.filter_input, 1)
         fb.addWidget(self.show_hidden)
         layout.addLayout(fb)
-
+        
         # ---- tree ----
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Name", "Size", "Modified"])
-        self.tree.header().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for i in (1, 2):
-            self.tree.header().setSectionResizeMode(
-                i, QHeaderView.ResizeMode.ResizeToContents
-            )
+            self.tree.header().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+            
         self.tree.setAlternatingRowColors(True)
         self.tree.setSortingEnabled(True)
         self.tree.itemDoubleClicked.connect(self.on_dbl_click)
@@ -190,44 +161,36 @@ class FileBrowserPanel(QWidget):
         self.tree.setDragEnabled(True)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         layout.addWidget(self.tree, 1)
-
+        
         theme = self.services.theme.current
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet(
-            f"color:{theme['sub']};font-size:11px;"
-        )
+        self.status_label.setStyleSheet(f"color:{theme['sub']};font-size:11px;")
         layout.addWidget(self.status_label)
-
+        
         # ---- keyboard shortcuts ----
         del_sc = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
         del_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         del_sc.activated.connect(self._delete_selected)
+        
         rf_sc = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
         rf_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         rf_sc.activated.connect(self.refresh)
-
+        
+        # F2 for rename
+        ren_sc = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
+        ren_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        ren_sc.activated.connect(self._rename_current)
+        
         if mode == "local":
             self.refresh()
 
-    # ------------------------------------------------------------------
     def configure_remote(
-        self,
-        host: str,
-        port: int,
-        user: str,
-        creds,
-        *,
-        use_agent: bool = False,
-        strict_host_keys: bool = False,
+        self, host: str, port: int, user: str, creds, *,
+        use_agent: bool = False, strict_host_keys: bool = False,
     ) -> None:
-        """Configure remote connection details."""
         self.host_info = {
-            "host": host,
-            "port": port,
-            "user": user,
-            "creds": creds,
-            "use_agent": use_agent,
-            "strict_host_keys": strict_host_keys,
+            "host": host, "port": port, "user": user, "creds": creds,
+            "use_agent": use_agent, "strict_host_keys": strict_host_keys,
         }
 
     # ------------------------------------------------------------------
@@ -254,11 +217,12 @@ class FileBrowserPanel(QWidget):
     def navigate_to_path(self, path: str) -> None:
         self.current_path = path
         self.path_input.setText(path)
-        # Reset the transient filter when moving directories.
+        
         self.filter_input.blockSignals(True)
         self.filter_input.clear()
         self.filter_input.blockSignals(False)
         self._filter_text = ""
+        
         if self.mode == "local":
             self._list_local(path)
         else:
@@ -293,7 +257,6 @@ class FileBrowserPanel(QWidget):
     # Listing / rendering
     # ------------------------------------------------------------------
     def _fill_tree(self, entries: list[dict[str, Any]], tag: str) -> None:
-        """Public entry point (also called by SFTPTab after chmod/delete)."""
         self._entries = entries
         self._tag = tag
         self._render()
@@ -308,33 +271,27 @@ class FileBrowserPanel(QWidget):
                 continue
             if self._filter_text and self._filter_text not in name.lower():
                 continue
+                
             item = _SortableItem()
             item.setText(0, f"{_icon_for(name, e['is_dir'])} {name}")
-            item.setText(
-                1, "<DIR>" if e["is_dir"] else self._fmt_size(e["size"])
-            )
+            item.setText(1, "<DIR>" if e["is_dir"] else self._fmt_size(e["size"]))
+            
             mtime = e.get("mtime")
             if mtime:
-                item.setText(
-                    2,
-                    datetime.datetime.fromtimestamp(mtime).strftime(
-                        "%Y-%m-%d %H:%M"
-                    ),
-                )
+                item.setText(2, datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"))
             else:
                 item.setText(2, "")
-            # Payload + numeric sort keys.
+                
             item.setData(0, Qt.ItemDataRole.UserRole, e)
             item.setData(0, _ROLE_SORT, name.lower())
             item.setData(1, _ROLE_SORT, -1 if e["is_dir"] else float(e["size"]))
             item.setData(2, _ROLE_SORT, float(mtime) if mtime else 0.0)
             self.tree.addTopLevelItem(item)
             visible += 1
+            
         self.tree.setSortingEnabled(True)
         self.tree.sortByColumn(0, Qt.SortOrder.AscendingOrder)
-        self.status_label.setText(
-            f"{visible}/{len(self._entries)} items ({self._tag})"
-        )
+        self.status_label.setText(f"{visible}/{len(self._entries)} items ({self._tag})")
 
     def _list_local(self, path: str) -> None:
         try:
@@ -343,15 +300,11 @@ class FileBrowserPanel(QWidget):
                 full = os.path.join(path, name)
                 try:
                     st = os.stat(full)
-                    entries.append(
-                        {
-                            "name": name,
-                            "size": st.st_size,
-                            "is_dir": os.path.isdir(full),
-                            "mtime": st.st_mtime,
-                            "mode": st.st_mode,
-                        }
-                    )
+                    entries.append({
+                        "name": name, "size": st.st_size,
+                        "is_dir": os.path.isdir(full), "mtime": st.st_mtime,
+                        "mode": st.st_mode,
+                    })
                 except Exception:
                     pass
             entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
@@ -363,16 +316,16 @@ class FileBrowserPanel(QWidget):
         if not self.host_info.get("host"):
             self.status_label.setText("Remote host not configured")
             return
+            
         self.status_label.setText("Loading…")
         self.tree.clear()
+        
         if self.sftp_worker and self.sftp_worker.isRunning():
             self.sftp_worker.wait(1500)
+            
         h = self.host_info
         self.sftp_worker = SftpWorker(
-            h["host"],
-            h.get("port", 22),
-            h.get("user", ""),
-            h.get("creds"),
+            h["host"], h.get("port", 22), h.get("user", ""), h.get("creds"),
             use_agent=h.get("use_agent", False),
             strict_host_keys=h.get("strict_host_keys", False),
         )
@@ -384,9 +337,7 @@ class FileBrowserPanel(QWidget):
         self.sftp_worker.set_task(task)
         self.sftp_worker.start()
 
-    def _on_remote_listing(
-        self, entries: list[dict[str, Any]], path: str
-    ) -> None:
+    def _on_remote_listing(self, entries: list[dict[str, Any]], path: str) -> None:
         self.current_path = path
         self.path_input.setText(path)
         self._fill_tree(entries, "remote")
@@ -409,133 +360,163 @@ class FileBrowserPanel(QWidget):
             return
         if e["is_dir"]:
             if self.mode == "local":
-                self.navigate_to_path(
-                    os.path.join(self.current_path, e["name"])
-                )
+                self.navigate_to_path(os.path.join(self.current_path, e["name"]))
             else:
                 self.navigate_to_path(self._remote_full(e["name"]))
         else:
             if self.mode == "local":
-                self.file_action.emit(
-                    "upload",
-                    os.path.join(self.current_path, e["name"]),
-                    self.panel_id,
-                )
+                self.file_action.emit("upload", os.path.join(self.current_path, e["name"]), self.panel_id)
             else:
-                self.file_action.emit(
-                    "download", self._remote_full(e["name"]), self.panel_id
-                )
+                self.file_action.emit("download", self._remote_full(e["name"]), self.panel_id)
 
     def show_ctx_menu(self, pos) -> None:
         item = self.tree.itemAt(pos)
         menu = QMenu(self)
-        if item:
-            e = item.data(0, Qt.ItemDataRole.UserRole)
-            full_local = os.path.join(self.current_path, e["name"])
-            full_remote = self._remote_full(e["name"])
+        
+        # Respect multi-selection
+        selected_items = self.tree.selectedItems()
+        if item and item not in selected_items:
+            if not selected_items:
+                selected_items = [item]
+                
+        if selected_items:
+            first_e = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+            first_full_local = os.path.join(self.current_path, first_e["name"]) if first_e else ""
+            first_full_remote = self._remote_full(first_e["name"]) if first_e else ""
+            
             if self.mode == "local":
-                if e["is_dir"]:
-                    menu.addAction(
-                        "📤 Upload Dir to Remote"
-                    ).triggered.connect(
-                        lambda: self.file_action.emit(
-                            "upload-dir", full_local, self.panel_id
-                        )
-                    )
-                else:
-                    menu.addAction("📤 Upload to Remote").triggered.connect(
-                        lambda: self.file_action.emit(
-                            "upload", full_local, self.panel_id
-                        )
+                def _upload_all():
+                    for sel_item in selected_items:
+                        e = sel_item.data(0, Qt.ItemDataRole.UserRole)
+                        if not e: continue
+                        full = os.path.join(self.current_path, e["name"])
+                        action = "upload-dir" if e["is_dir"] else "upload"
+                        self.file_action.emit(action, full, self.panel_id)
+                menu.addAction(f"📤 Upload Selected ({len(selected_items)})").triggered.connect(_upload_all)
+                
+                if len(selected_items) == 1:
+                    menu.addAction("✏️ Rename (F2)").triggered.connect(lambda: self._rename_item(first_e))
+                    menu.addAction("📂 Open Containing Folder").triggered.connect(
+                        lambda: self._open_containing_folder(first_full_local)
                     )
             else:
-                if e["is_dir"]:
-                    menu.addAction(
-                        "📥 Download Dir to Local"
-                    ).triggered.connect(
-                        lambda: self.file_action.emit(
-                            "download-dir", full_remote, self.panel_id
+                def _download_all():
+                    for sel_item in selected_items:
+                        e = sel_item.data(0, Qt.ItemDataRole.UserRole)
+                        if not e: continue
+                        full = self._remote_full(e["name"])
+                        action = "download-dir" if e["is_dir"] else "download"
+                        self.file_action.emit(action, full, self.panel_id)
+                menu.addAction(f"📥 Download Selected ({len(selected_items)})").triggered.connect(_download_all)
+                
+                if len(selected_items) == 1 and first_e:
+                    if not first_e["is_dir"]:
+                        menu.addAction("✏️ Open in Editor").triggered.connect(
+                            lambda: self.file_action.emit("edit", first_full_remote, self.panel_id)
                         )
-                    )
-                else:
-                    menu.addAction("📥 Download to Local").triggered.connect(
-                        lambda: self.file_action.emit(
-                            "download", full_remote, self.panel_id
-                        )
-                    )
-                    menu.addAction("✏️ Open in Editor").triggered.connect(
-                        lambda: self.file_action.emit(
-                            "edit", full_remote, self.panel_id
-                        )
-                    )
                     menu.addAction("🔐 Permissions (chmod)").triggered.connect(
                         lambda: self.file_action.emit(
                             "chmod",
-                            json.dumps(
-                                {
-                                    "path": full_remote,
-                                    "mode": e.get("mode", 0o644),
-                                }
-                            ),
+                            json.dumps({"path": first_full_remote, "mode": first_e.get("mode", 0o644)}),
                             self.panel_id,
                         )
                     )
-                    menu.addAction("🗑 Delete").triggered.connect(
-                        lambda: self._confirm_delete(full_remote)
-                    )
+                    menu.addAction("✏️ Rename (F2)").triggered.connect(lambda: self._rename_item(first_e))
+                    
                 menu.addSeparator()
-                menu.addAction("🗑 Delete Selected…").triggered.connect(
-                    self._delete_selected
-                )
+                menu.addAction("🗑 Delete Selected…").triggered.connect(self._delete_selected)
+                
             menu.addSeparator()
             menu.addAction("📋 Copy Path").triggered.connect(
                 lambda: QApplication.clipboard().setText(
-                    full_local if self.mode == "local" else full_remote
+                    first_full_local if self.mode == "local" else first_full_remote
                 )
             )
-        menu.addAction("🔄 Refresh").triggered.connect(self.refresh)
+            
+        menu.addAction("🔄 Refresh (F5)").triggered.connect(self.refresh)
         menu.addAction("📁 New Folder").triggered.connect(
-            lambda: self.file_action.emit(
-                "mkdir", self.current_path, self.panel_id
-            )
+            lambda: self.file_action.emit("mkdir", self.current_path, self.panel_id)
         )
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     # ------------------------------------------------------------------
+    # Helper Actions
+    # ------------------------------------------------------------------
+    def _rename_current(self) -> None:
+        item = self.tree.currentItem()
+        if item:
+            e = item.data(0, Qt.ItemDataRole.UserRole)
+            if e:
+                self._rename_item(e)
+
+    def _rename_item(self, e: dict) -> None:
+        old_name = e["name"]
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=old_name)
+        if ok and new_name and new_name != old_name:
+            if self.mode == "local":
+                old_path = os.path.join(self.current_path, old_name)
+                new_path = os.path.join(self.current_path, new_name)
+                try:
+                    os.rename(old_path, new_path)
+                    self.refresh()
+                except Exception as ex:
+                    QMessageBox.critical(self, "Rename Error", str(ex))
+            else:
+                old_path = self._remote_full(old_name)
+                new_path = self._remote_full(new_name)
+                self.file_action.emit(
+                    "rename",
+                    json.dumps({"old": old_path, "new": new_path}),
+                    self.panel_id,
+                )
+
+    def _open_containing_folder(self, path: str) -> None:
+        folder = os.path.dirname(path) if not os.path.isdir(path) else path
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(f'explorer /select,"{path}"')
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as ex:
+            QMessageBox.critical(self, "Open Folder", str(ex))
+
+    # ------------------------------------------------------------------
     # Destructive actions
     # ------------------------------------------------------------------
-    def _confirm_delete(self, full_remote: str) -> None:
-        if (
-            QMessageBox.question(
-                self,
-                "Delete",
-                f"Delete {full_remote}?\nThis cannot be undone.",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            self.file_action.emit("delete", full_remote, self.panel_id)
-
     def _delete_selected(self) -> None:
-        if self.mode != "remote":
-            return
         sels = self.get_selected_files()
         if not sels:
             return
+            
+        if self.mode == "local":
+            names = ", ".join(s["name"] for s in sels[:5])
+            more = f" (+{len(sels) - 5} more)" if len(sels) > 5 else ""
+            if QMessageBox.question(
+                self, "Delete", f"Delete {len(sels)} local item(s)?\n{names}{more}\nThis cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            for s in sels:
+                try:
+                    if s["is_dir"]:
+                        import shutil
+                        shutil.rmtree(s["path"])
+                    else:
+                        os.remove(s["path"])
+                except Exception as ex:
+                    QMessageBox.critical(self, "Delete Error", str(ex))
+            self.refresh()
+            return
+
+        # Remote delete
         names = ", ".join(s["name"] for s in sels[:5])
         more = f" (+{len(sels) - 5} more)" if len(sels) > 5 else ""
-        if (
-            QMessageBox.question(
-                self,
-                "Delete",
-                f"Delete {len(sels)} item(s)?\n{names}{more}\n"
-                "This cannot be undone.",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-            )
-            != QMessageBox.StandardButton.Yes
-        ):
+        if QMessageBox.question(
+            self, "Delete", f"Delete {len(sels)} item(s)?\n{names}{more}\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         for s in sels:
             self.file_action.emit("delete", s["path"], self.panel_id)
@@ -545,22 +526,12 @@ class FileBrowserPanel(QWidget):
     # ------------------------------------------------------------------
     def get_selected_file(self) -> Optional[dict[str, Any]]:
         item = self.tree.currentItem()
-        if not item:
-            return None
+        if not item: return None
         e = item.data(0, Qt.ItemDataRole.UserRole)
-        if not e:
-            return None
+        if not e: return None
         if self.mode == "local":
-            return {
-                "path": os.path.join(self.current_path, e["name"]),
-                "name": e["name"],
-                "is_dir": e["is_dir"],
-            }
-        return {
-            "path": self._remote_full(e["name"]),
-            "name": e["name"],
-            "is_dir": e["is_dir"],
-        }
+            return {"path": os.path.join(self.current_path, e["name"]), "name": e["name"], "is_dir": e["is_dir"]}
+        return {"path": self._remote_full(e["name"]), "name": e["name"], "is_dir": e["is_dir"]}
 
     def get_selected_files(self) -> list[dict[str, Any]]:
         items = self.tree.selectedItems()
@@ -570,24 +541,11 @@ class FileBrowserPanel(QWidget):
         selected = []
         for item in items:
             e = item.data(0, Qt.ItemDataRole.UserRole)
-            if not e:
-                continue
+            if not e: continue
             if self.mode == "local":
-                selected.append(
-                    {
-                        "path": os.path.join(self.current_path, e["name"]),
-                        "name": e["name"],
-                        "is_dir": e["is_dir"],
-                    }
-                )
+                selected.append({"path": os.path.join(self.current_path, e["name"]), "name": e["name"], "is_dir": e["is_dir"]})
             else:
-                selected.append(
-                    {
-                        "path": self._remote_full(e["name"]),
-                        "name": e["name"],
-                        "is_dir": e["is_dir"],
-                    }
-                )
+                selected.append({"path": self._remote_full(e["name"]), "name": e["name"], "is_dir": e["is_dir"]})
         return selected
 
     # ------------------------------------------------------------------
@@ -600,31 +558,19 @@ class FileBrowserPanel(QWidget):
 
     def mouseMoveEvent(self, e):
         if self._drag_start_pos:
-            distance = (
-                e.position().toPoint() - self._drag_start_pos
-            ).manhattanLength()
+            distance = (e.position().toPoint() - self._drag_start_pos).manhattanLength()
             if distance > 10:
                 selected = self.get_selected_files()
                 if selected:
                     md = QMimeData()
                     if self.mode == "local":
-                        md.setUrls(
-                            [QUrl.fromLocalFile(x["path"]) for x in selected]
-                        )
+                        md.setUrls([QUrl.fromLocalFile(x["path"]) for x in selected])
                     else:
-                        payload = json.dumps(
-                            {
-                                "panel_id": self.panel_id,
-                                "files": [
-                                    {"path": x["path"], "name": x["name"]}
-                                    for x in selected
-                                ],
-                            }
-                        )
-                        md.setData(
-                            "application/x-admin-suite-remote-files",
-                            QByteArray(payload.encode()),
-                        )
+                        payload = json.dumps({
+                            "panel_id": self.panel_id,
+                            "files": [{"path": x["path"], "name": x["name"]} for x in selected],
+                        })
+                        md.setData("application/x-admin-suite-remote-files", QByteArray(payload.encode()))
                     drag = QDrag(self)
                     drag.setMimeData(md)
                     drag.exec(Qt.DropAction.CopyAction)
@@ -632,12 +578,7 @@ class FileBrowserPanel(QWidget):
         super().mouseMoveEvent(e)
 
     def dragEnterEvent(self, e):
-        if (
-            e.mimeData().hasUrls()
-            or e.mimeData().hasFormat(
-                "application/x-admin-suite-remote-files"
-            )
-        ):
+        if e.mimeData().hasUrls() or e.mimeData().hasFormat("application/x-admin-suite-remote-files"):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
@@ -645,11 +586,8 @@ class FileBrowserPanel(QWidget):
         if self.mode == "remote" and md.hasUrls():
             urls = [u.toLocalFile() for u in md.urls()]
             urls = [p for p in urls if p and os.path.exists(p)]
-            if not urls:
-                return
-            if len(urls) > 5 and not self._confirm_bulk(
-                f"Upload {len(urls)} items to remote?"
-            ):
+            if not urls: return
+            if len(urls) > 5 and not self._confirm_bulk(f"Upload {len(urls)} items to remote?"):
                 return
             for lp in urls:
                 if os.path.isdir(lp):
@@ -657,44 +595,21 @@ class FileBrowserPanel(QWidget):
                 else:
                     self.file_action.emit("upload", lp, self.panel_id)
             e.acceptProposedAction()
-        elif self.mode == "local" and md.hasFormat(
-            "application/x-admin-suite-remote-files"
-        ):
-            raw = json.loads(
-                bytes(
-                    md.data("application/x-admin-suite-remote-files")
-                ).decode()
-            )
+        elif self.mode == "local" and md.hasFormat("application/x-admin-suite-remote-files"):
+            raw = json.loads(bytes(md.data("application/x-admin-suite-remote-files")).decode())
             files = raw.get("files", []) if isinstance(raw, dict) else raw
-            if not files:
-                return
-            if len(files) > 5 and not self._confirm_bulk(
-                f"Download {len(files)} items to local?"
-            ):
+            if not files: return
+            if len(files) > 5 and not self._confirm_bulk(f"Download {len(files)} items to local?"):
                 return
             for it in files:
-                self.file_action.emit(
-                    "download-to",
-                    json.dumps(
-                        {
-                            "remote": it["path"],
-                            "local": os.path.join(
-                                self.current_path, it["name"]
-                            ),
-                        }
-                    ),
-                    self.panel_id,
-                )
+                self.file_action.emit("download-to", json.dumps({
+                    "remote": it["path"],
+                    "local": os.path.join(self.current_path, it["name"]),
+                }), self.panel_id)
             e.acceptProposedAction()
 
     def _confirm_bulk(self, message: str) -> bool:
-        return (
-            QMessageBox.question(
-                self,
-                "Confirm transfer",
-                message,
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        )
+        return QMessageBox.question(
+            self, "Confirm transfer", message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
