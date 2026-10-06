@@ -2000,14 +2000,19 @@ class MainWindow(QMainWindow):
             width = getattr(self, "_sidebar_width", 280)
 
             if hasattr(self, "main_splitter"):
-                total = self.main_splitter.width()
-
-                if total <= 0:
-                    total = self.width()
-
-                self.main_splitter.setSizes(
-                    [width, max(total - width, 500)]
-                )
+                sizes = self.main_splitter.sizes()
+                if len(sizes) == 3:
+                    c_w = sizes[2] if hasattr(self, "ai_tab") and self.ai_tab.isVisible() else 0
+                    total = sum(sizes) if sum(sizes) > 0 else max(self.width(), 1200)
+                    w_w = max(total - width - c_w, 400)
+                    self.main_splitter.setSizes([width, w_w, c_w])
+                else:
+                    total = self.main_splitter.width()
+                    if total <= 0:
+                        total = self.width()
+                    self.main_splitter.setSizes(
+                        [width, max(total - width, 500)]
+                    )
 
         else:
             if hasattr(self, "main_splitter"):
@@ -2033,6 +2038,60 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def toggle_copilot(self, force_visible: Optional[bool] = None) -> None:
+        if not hasattr(self, "ai_tab"):
+            return
+
+        visible = force_visible if force_visible is not None else not self.ai_tab.isVisible()
+
+        if visible:
+            self.ai_tab.show()
+            width = getattr(self, "_copilot_width", 340)
+
+            if hasattr(self, "main_splitter"):
+                sizes = self.main_splitter.sizes()
+                if len(sizes) == 3:
+                    s_w = sizes[0] if hasattr(self, "sidebar") and self.sidebar.isVisible() else 0
+                    total = sum(sizes) if sum(sizes) > 0 else max(self.width(), 1200)
+                    w_w = max(total - s_w - width, 400)
+                    self.main_splitter.setSizes([s_w, w_w, width])
+
+            self.ai_tab.update_context()
+        else:
+            if hasattr(self, "main_splitter"):
+                sizes = self.main_splitter.sizes()
+                if len(sizes) == 3 and sizes[2] > 0:
+                    self._copilot_width = sizes[2]
+
+            self.ai_tab.hide()
+
+        self._update_copilot_btn_style(visible)
+
+        try:
+            self._settings.setValue("copilot/visible", visible)
+            if visible:
+                self._settings.setValue(
+                    "copilot/width",
+                    getattr(self, "_copilot_width", 340),
+                )
+        except Exception:
+            pass
+
+    def _update_copilot_btn_style(self, visible: bool) -> None:
+        if not hasattr(self, "copilot_toggle_btn"):
+            return
+        theme = self.services.theme.current
+        if visible:
+            self.copilot_toggle_btn.setText("🤖 Copilot ▶")
+            self.copilot_toggle_btn.setStyleSheet(
+                f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
+            )
+        else:
+            self.copilot_toggle_btn.setText("🤖 Copilot ◀")
+            self.copilot_toggle_btn.setStyleSheet(
+                f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
+            )
+
     # ------------------------------------------------------------
     # Tools
     # ------------------------------------------------------------
@@ -2043,6 +2102,11 @@ class MainWindow(QMainWindow):
     def _build_commands(self):
         commands = [
             {"name": "VPN Toggle", "cb": self.vpn.toggle},
+            {
+                "name": "Toggle AI Copilot Sidebar",
+                "hint": "Ctrl+Shift+A",
+                "cb": self.toggle_copilot,
+            },
             {
                 "name": "New Terminal (selected profile)",
                 "hint": "Ctrl+T",
