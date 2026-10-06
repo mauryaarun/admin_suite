@@ -237,13 +237,20 @@ class MainWindow(QMainWindow):
                     "◀" if sidebar_visible else "▶"
                 )
 
-            if sidebar_visible and hasattr(self, "main_splitter"):
-                self.main_splitter.setSizes(
-                    [
-                        self._sidebar_width,
-                        max(self.main_splitter.width() - self._sidebar_width, 800),
-                    ]
-                )
+            copilot_visible = self._settings.value("copilot/visible", True, type=bool)
+            copilot_width = self._settings.value("copilot/width", 340, type=int)
+            self._copilot_width = copilot_width if copilot_width > 0 else 340
+
+            if hasattr(self, "ai_tab"):
+                self.ai_tab.setVisible(copilot_visible)
+            self._update_copilot_btn_style(copilot_visible)
+
+            if hasattr(self, "main_splitter"):
+                total = max(self.main_splitter.width(), self.width(), 1440)
+                s_w = self._sidebar_width if sidebar_visible else 0
+                c_w = self._copilot_width if copilot_visible else 0
+                w_w = max(total - s_w - c_w, 600)
+                self.main_splitter.setSizes([s_w, w_w, c_w])
 
         except Exception:
             pass
