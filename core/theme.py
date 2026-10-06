@@ -352,7 +352,7 @@ class ThemeManager:
 
         qss = QSS_TEMPLATE
 
-        for key, value in theme.items():
+        for key, value in sorted(theme.items(), key=lambda kv: len(kv[0]), reverse=True):
             if key == "xterm":
                 continue
 
