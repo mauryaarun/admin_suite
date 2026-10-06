@@ -43,10 +43,11 @@ class RsyncWorker(QThread):
     output_ready = pyqtSignal(str)
     finished_signal = pyqtSignal(int)
 
-    def __init__(self, cmd, cwd=None):
+    def __init__(self, cmd, cwd=None, env=None):
         super().__init__()
         self.cmd = cmd
         self.cwd = cwd
+        self.env = env
         self.proc = None
 
     def run(self):
@@ -57,6 +58,7 @@ class RsyncWorker(QThread):
                 stderr=subprocess.STDOUT,
                 text=True,
                 cwd=self.cwd,
+                env=self.env,
                 bufsize=1,
             )
             for line in self.proc.stdout:
@@ -281,11 +283,13 @@ class RsyncDialog(QDialog):
 
     @staticmethod
     def _display_cmd(cmd: list[str]) -> str:
-        """Return the command as a string with the sshpass password masked."""
+        """Return the command as a string with passwords masked."""
         out = list(cmd)
         for i in range(len(out) - 2):
             if out[i] == "sshpass" and out[i + 1] == "-p":
                 out[i + 2] = "****"
+        if out and out[0] == "sshpass" and "-e" in out:
+            return "SSHPASS=**** " + " ".join(out)
         return " ".join(out)
 
     def build_command(self):
@@ -307,8 +311,12 @@ class RsyncDialog(QDialog):
             remote += "/"
 
         ssh_cmd = ["ssh", "-p", str(port), "-o", "StrictHostKeyChecking=no"]
-        if creds and getattr(creds, "key_path", None):
-            ssh_cmd.extend(["-i", creds.key_path])
+        key_path = getattr(creds, "key_path", None) if creds else None
+        if key_path:
+            key_path = os.path.expanduser(key_path)
+            if os.path.exists(key_path):
+                ssh_cmd.extend(["-i", key_path])
+
         ssh_cmd_str = " ".join(shlex.quote(c) for c in ssh_cmd)
 
         cmd = ["rsync", "-a", "-v", "--info=progress2", "-e", ssh_cmd_str]
@@ -331,23 +339,23 @@ class RsyncDialog(QDialog):
             if pat:
                 cmd.extend(["--exclude", pat])
 
-        # Password auth requires sshpass on the local machine.
-        if (
-            creds
-            and getattr(creds, "password", None)
-            and not getattr(creds, "key_path", None)
-        ):
-            try:
-                subprocess.run(
-                    ["sshpass", "-V"], capture_output=True, check=True
-                )
-                cmd = ["sshpass", "-p", creds.password] + cmd
-            except (FileNotFoundError, subprocess.CalledProcessError):
+        # Password / passphrase handling
+        self._sync_env = None
+        password = getattr(creds, "password", None) if creds else None
+        passphrase = getattr(creds, "passphrase", None) if creds else None
+        secret_to_pass = password or (passphrase if key_path else None)
+
+        if secret_to_pass and not (key_path and not passphrase):
+            import shutil
+            if shutil.which("sshpass"):
+                self._sync_env = os.environ.copy()
+                self._sync_env["SSHPASS"] = secret_to_pass
+                cmd = ["sshpass", "-e"] + cmd
+            else:
                 return None, (
-                    "Password authentication requires 'sshpass' to be "
-                    "installed on your local system.\nInstall it via your "
-                    "package manager (e.g. sudo apt install sshpass) or use "
-                    "an SSH key."
+                    "Authentication requires 'sshpass' to be installed on your local Linux system.\n\n"
+                    "Please install it via:\n  sudo apt install sshpass\n\n"
+                    "or configure passwordless SSH key authentication."
                 )
 
         remote_target = f"{user}@{host}:{remote}"
@@ -371,7 +379,7 @@ class RsyncDialog(QDialog):
         self._append_line("")
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.worker = RsyncWorker(cmd)
+        self.worker = RsyncWorker(cmd, env=getattr(self, "_sync_env", None))
         self.worker.output_ready.connect(self._append_line)
         self.worker.finished_signal.connect(self.sync_finished)
         self.worker.start()

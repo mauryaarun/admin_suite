@@ -1,11 +1,32 @@
-python -m PyInstaller \
+#!/usr/bin/env bash
+set -e
+
+# Detect python interpreter with PyInstaller
+if [ -f "/home/arun/myvenv/bin/python" ]; then
+    PYTHON_CMD="/home/arun/myvenv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+else
+    PYTHON_CMD="python"
+fi
+
+ICON_ARGS=()
+if [ -f "icon.ico" ]; then
+    ICON_ARGS+=(--icon=icon.ico)
+fi
+
+echo "Using Python: $PYTHON_CMD"
+echo "Starting PyInstaller build for AdminSuite..."
+
+$PYTHON_CMD -m PyInstaller \
   --noconfirm \
   --clean \
   --onefile \
   --windowed \
   --name AdminSuite \
-  --icon=icon.ico \
+  "${ICON_ARGS[@]}" \
   --paths . \
+  --paths .. \
   --optimize 2 \
   --collect-all PyQt6 \
   --collect-all PyQt6.QtWebEngineCore \
@@ -22,7 +43,10 @@ python -m PyInstaller \
   --hidden-import admin_suite.ai \
   --hidden-import admin_suite.ai.assistant_tab \
   --hidden-import admin_suite.ai.ollama_client \
+  --hidden-import admin_suite.web \
+  --hidden-import admin_suite.security \
   --collect-binaries PyQt6 \
   --collect-datas admin_suite \
   admin_entry.py
-  #--strip \
+
+echo "Build completed successfully! Binary located in dist/AdminSuite"

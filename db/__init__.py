@@ -53,6 +53,10 @@ from admin_suite.db.table_detail import (
     TableDetailTab,
 )
 
+from admin_suite.db.table_designer import (
+    TableDesignerDialog,
+)
+
 from admin_suite.db.backends import (
     BACKENDS,
 )
@@ -74,6 +78,7 @@ __all__ = [
     "export_database",
     "RecordDialog",
     "CreateTableDialog",
+    "TableDesignerDialog",
     "DatabaseManagerWidget",
     "TableDetailTab",
     "BACKENDS",

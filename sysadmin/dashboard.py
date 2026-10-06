@@ -288,24 +288,92 @@ class SysAdminTab(QWidget):
         model = self._get_source_model("Users")
         model.clear()
         model.setHorizontalHeaderLabels(
-            ["User", "UID", "GID", "GECOS", "Home", "Shell"]
+            ["User", "UID", "Type", "Privileged", "Status", "Home", "Shell"]
         )
+        theme = self.theme
+
+        current_section = "passwd"
+        passwd_lines = []
+        logged_in_users = set()
+        privileged_users = set()
+
         for line in out.splitlines():
+            line_s = line.strip()
+            if line_s == "=== PASSWD ===":
+                current_section = "passwd"
+                continue
+            elif line_s == "=== LOGGED_IN ===":
+                current_section = "logged_in"
+                continue
+            elif line_s == "=== PRIVILEGED ===":
+                current_section = "privileged"
+                continue
+
+            if not line_s or line_s.startswith("#") or line_s.startswith("=="):
+                continue
+
+            if current_section == "logged_in":
+                parts = line_s.split()
+                if parts:
+                    logged_in_users.add(parts[0])
+            elif current_section == "privileged":
+                if ":" in line_s:
+                    parts = line_s.split(":")
+                    if len(parts) >= 4 and parts[3]:
+                        for u in parts[3].split(","):
+                            if u.strip():
+                                privileged_users.add(u.strip())
+            else:
+                passwd_lines.append(line_s)
+
+        for line in passwd_lines:
             parts = line.split(":")
             if len(parts) >= 7:
-                model.appendRow(
-                    [
-                        QStandardItem(x)
-                        for x in (
-                            parts[0],
-                            parts[2],
-                            parts[3],
-                            parts[4],
-                            parts[5],
-                            parts[6],
-                        )
-                    ]
-                )
+                username = parts[0]
+                uid_str = parts[2]
+                try:
+                    uid = int(uid_str)
+                except ValueError:
+                    uid = 9999
+
+                if uid == 0:
+                    acc_type = "Root"
+                elif 1000 <= uid < 65534:
+                    acc_type = "Human"
+                else:
+                    acc_type = "System"
+
+                is_priv = "Yes (sudo)" if (username in privileged_users or uid == 0) else "No"
+                is_logged = "● Online" if username in logged_in_users else "Offline"
+                home = parts[5]
+                shell = parts[6]
+
+                item_user = QStandardItem(username)
+                item_uid = QStandardItem()
+                item_uid.setData(uid, Qt.ItemDataRole.DisplayRole)
+                item_type = QStandardItem(acc_type)
+                item_priv = QStandardItem(is_priv)
+                item_status = QStandardItem(is_logged)
+                item_home = QStandardItem(home)
+                item_shell = QStandardItem(shell)
+
+                if is_logged == "● Online":
+                    item_status.setForeground(QColor(theme.get("ok", "#0dbc79")))
+                else:
+                    item_status.setForeground(QColor(theme.get("sub", "#888888")))
+
+                if is_priv.startswith("Yes"):
+                    item_priv.setForeground(QColor(theme.get("accent", "#3daee9")))
+
+                if acc_type == "Human":
+                    item_type.setForeground(QColor(theme.get("ok", "#0dbc79")))
+                elif acc_type == "Root":
+                    item_type.setForeground(QColor(theme.get("danger", "#ff5555")))
+
+                model.appendRow([
+                    item_user, item_uid, item_type, item_priv, item_status, item_home, item_shell
+                ])
+
         self.table_views["Users"].resizeColumnsToContents()
 
     def _render_services(self, out: str) -> None:
@@ -315,33 +383,76 @@ class SysAdminTab(QWidget):
             ["Unit", "Load", "Active", "Sub", "Description"]
         )
         theme = self.theme
+        seen = set()
         for line in out.splitlines():
-            parts = line.split(None, 4)
-            if len(parts) >= 4 and parts[0].endswith(".service"):
+            line_s = line.strip()
+            if not line_s or line_s.startswith("==") or line_s.startswith("--"):
+                continue
+            parts = line_s.split(None, 4)
+            if len(parts) >= 4:
+                unit = parts[0]
+                if not (unit.endswith(".service") or unit.endswith(".target") or unit.endswith(".socket")):
+                    continue
+                if unit in seen:
+                    continue
+                seen.add(unit)
+
                 desc = parts[4] if len(parts) > 4 else ""
                 row = [
                     QStandardItem(x)
                     for x in (parts[0], parts[1], parts[2], parts[3], desc)
                 ]
                 if parts[2] == "active":
-                    row[2].setForeground(QColor(theme["ok"]))
+                    row[2].setForeground(QColor(theme.get("ok", "#0dbc79")))
                 elif parts[2] == "failed":
-                    row[2].setForeground(QColor(theme["danger"]))
+                    row[2].setForeground(QColor(theme.get("danger", "#ff5555")))
+                else:
+                    row[2].setForeground(QColor(theme.get("sub", "#888888")))
                 model.appendRow(row)
         self.table_views["Services"].resizeColumnsToContents()
 
     def _render_processes(self, out: str) -> None:
         model = self._get_source_model("Processes")
         model.clear()
-        lines = out.splitlines()
+        lines = [line for line in out.splitlines() if line.strip()]
         if not lines:
             return
-        headers = lines[0].split(None, 10)
+
+        header_idx = -1
+        for idx, line in enumerate(lines):
+            if "USER" in line and "PID" in line:
+                header_idx = idx
+                break
+
+        if header_idx == -1:
+            header_idx = 0
+
+        headers = lines[header_idx].split(None, 10)
         model.setHorizontalHeaderLabels(headers)
-        for line in lines[1:]:
+
+        for line in lines[header_idx + 1:]:
+            if line.startswith("==") or line.startswith("--"):
+                continue
             parts = line.split(None, 10)
             if len(parts) >= 11:
-                model.appendRow([QStandardItem(x) for x in parts])
+                row_items = []
+                for col_idx, x in enumerate(parts):
+                    item = QStandardItem()
+                    if col_idx == 1:  # PID
+                        try:
+                            item.setData(int(x), Qt.ItemDataRole.DisplayRole)
+                        except ValueError:
+                            item.setText(x)
+                    elif col_idx in (2, 3):  # %CPU, %MEM
+                        try:
+                            item.setData(float(x), Qt.ItemDataRole.DisplayRole)
+                        except ValueError:
+                            item.setText(x)
+                    else:
+                        item.setText(x)
+                    row_items.append(item)
+                model.appendRow(row_items)
+
         self.table_views["Processes"].resizeColumnsToContents()
 
     # ------------------------------------------------------------------

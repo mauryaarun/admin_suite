@@ -30,23 +30,18 @@ SYSADMIN_CMDS = {
     ),
 
     "Users": (
-        "echo '== CURRENTLY LOGGED IN =='; w -h 2>/dev/null || who 2>/dev/null || echo 'none'; "
-        "echo; echo '== RECENT LOGINS =='; last -n 10 2>/dev/null || echo 'none'; "
-        "echo; echo '== HUMAN USERS (UID >= 1000) =='; awk -F: '$3 >= 1000 && $3 < 65534 {print $1, \"UID:\"$3, \"Shell:\"$7}' /etc/passwd; "
-        "echo; echo '== SYSTEM ACCOUNTS (UID 100-999) =='; awk -F: '$3 >= 100 && $3 < 1000 {printf \"%s \", $1}' /etc/passwd; echo; "
-        "echo; echo '== ALL GROUPS =='; awk -F: '{print $1, \"GID:\"$3}' /etc/group; "
-        "echo; echo '== PRIVILEGED GROUPS =='; grep -E '^(sudo|wheel|admin):' /etc/group 2>/dev/null || echo 'none'"
+        "echo '=== PASSWD ==='; getent passwd 2>/dev/null || cat /etc/passwd; "
+        "echo '=== LOGGED_IN ==='; who 2>/dev/null || w -h 2>/dev/null || true; "
+        "echo '=== PRIVILEGED ==='; getent group sudo wheel admin 2>/dev/null || grep -E '^(sudo|wheel|admin):' /etc/group 2>/dev/null || true"
     ),
 
     "Services": (
-        "echo '== FAILED SERVICES =='; systemctl --failed --no-legend --no-pager 2>/dev/null || echo 'none'; "
-        "echo; echo '== ALL SERVICES =='; systemctl list-units --type=service --all --no-legend --plain --no-pager 2>/dev/null "
-        "|| service --status-all 2>/dev/null "
+        "systemctl list-units --type=service --all --no-legend --plain --no-pager 2>/dev/null "
+        "|| service --status-all 2>/dev/null"
     ),
 
     "Processes": (
-        "echo '== TOP 20 BY CPU =='; ps aux --sort=-%cpu | head -n 21; "
-        "echo; echo '== TOP 20 BY MEMORY =='; ps aux --sort=-%mem | head -n 21 "
+        "ps aux --sort=-%cpu | head -n 250"
     ),
 
     "Storage": (

@@ -5,6 +5,7 @@ Main UI dialogs.
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -235,18 +237,19 @@ class ProfileDialog(QDialog):
 
 class DbProfileDialog(QDialog):
     """
-    Add/edit DB profile.
+    Add/edit DB profile with SSH key and profile linking support.
     """
 
     def __init__(self, parent, services, edit_data=None):
         super().__init__(parent)
 
         self.services = services
+        self.main_parent = parent
 
         e = edit_data or {}
 
         self.setWindowTitle("Edit DB Profile" if edit_data else "Add DB Profile")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
 
         layout = QFormLayout(self)
 
@@ -257,6 +260,7 @@ class DbProfileDialog(QDialog):
             ["mysql", "sqlite"] + (["postgresql"] if PG_AVAILABLE else [])
         )
         self.backend_in.setCurrentText(e.get("backend", "mysql"))
+        self.backend_in.currentTextChanged.connect(self._on_backend_change)
 
         self.db_host = QLineEdit(e.get("db_host", "127.0.0.1"))
         self.db_port = QLineEdit(str(e.get("db_port", "3306")))
@@ -269,41 +273,83 @@ class DbProfileDialog(QDialog):
 
         self.sqlite_path = QLineEdit(e.get("sqlite_path", ""))
 
-        browse = QPushButton("...")
-        browse.clicked.connect(self._browse_sqlite)
+        browse_sqlite_btn = QPushButton("...")
+        browse_sqlite_btn.clicked.connect(self._browse_sqlite)
 
-        sqlite_row = QHBoxLayout()
-        sqlite_row.addWidget(self.sqlite_path, 1)
-        sqlite_row.addWidget(browse)
+        self.sqlite_row = QWidget()
+        sqlite_h = QHBoxLayout(self.sqlite_row)
+        sqlite_h.setContentsMargins(0, 0, 0, 0)
+        sqlite_h.addWidget(self.sqlite_path, 1)
+        sqlite_h.addWidget(browse_sqlite_btn)
 
+        # SSH Tunnel settings
         self.use_tunnel = QCheckBox("Route through SSH tunnel")
         self.use_tunnel.setChecked(e.get("use_tunnel", False))
+        self.use_tunnel.stateChanged.connect(self._on_tunnel_toggle)
+
+        # SSH Profile selector
+        self.ssh_profile_combo = QComboBox()
+        self.ssh_profile_combo.addItem("(Custom SSH Settings)")
+        known_profiles = []
+        if hasattr(parent, "profiles") and isinstance(parent.profiles, dict):
+            known_profiles = list(parent.profiles.keys())
+        elif hasattr(parent, "main_window") and hasattr(parent.main_window, "profiles"):
+            known_profiles = list(parent.main_window.profiles.keys())
+
+        for p_name in sorted(known_profiles):
+            self.ssh_profile_combo.addItem(p_name)
+
+        current_prof = e.get("ssh_profile", "")
+        if current_prof and self.ssh_profile_combo.findText(current_prof) >= 0:
+            self.ssh_profile_combo.setCurrentText(current_prof)
+        self.ssh_profile_combo.currentTextChanged.connect(self._on_ssh_profile_selected)
 
         self.ssh_host = QLineEdit(e.get("ssh_host", ""))
         self.ssh_user = QLineEdit(e.get("ssh_user", ""))
         self.ssh_port = QLineEdit(str(e.get("ssh_port", "22")))
 
+        self.ssh_auth_method = QComboBox()
+        self.ssh_auth_method.addItems(["Password", "SSH Key"])
+        self.ssh_auth_method.setCurrentText(e.get("ssh_auth_method", "SSH Key" if e.get("ssh_key_path") else "Password"))
+        self.ssh_auth_method.currentTextChanged.connect(self._on_ssh_auth_toggle)
+
         self.ssh_pass = QLineEdit(e.get("ssh_pass", ""))
         self.ssh_pass.setEchoMode(QLineEdit.EchoMode.Password)
 
+        self.ssh_key_path = QLineEdit(e.get("ssh_key_path", ""))
+        browse_key_btn = QPushButton("...")
+        browse_key_btn.clicked.connect(self._browse_ssh_key)
+
+        self.ssh_key_row = QWidget()
+        key_h = QHBoxLayout(self.ssh_key_row)
+        key_h.setContentsMargins(0, 0, 0, 0)
+        key_h.addWidget(self.ssh_key_path, 1)
+        key_h.addWidget(browse_key_btn)
+
         layout.addRow("Name:", self.name_in)
         layout.addRow("Backend:", self.backend_in)
+        layout.addRow("SQLite File:", self.sqlite_row)
         layout.addRow("DB Host:", self.db_host)
         layout.addRow("DB Port:", self.db_port)
         layout.addRow("DB User:", self.db_user)
         layout.addRow("DB Password:", self.db_pass)
         layout.addRow("Default Schema:", self.db_name)
-        layout.addRow("SQLite File:", sqlite_row)
         layout.addRow("", self.use_tunnel)
+        layout.addRow("Use SSH Profile:", self.ssh_profile_combo)
         layout.addRow("SSH Host:", self.ssh_host)
-        layout.addRow("SSH User:", self.ssh_user)
         layout.addRow("SSH Port:", self.ssh_port)
-        layout.addRow("SSH Password:", self.ssh_pass)
+        layout.addRow("SSH User:", self.ssh_user)
+        layout.addRow("SSH Auth:", self.ssh_auth_method)
+        layout.addRow("SSH Password/Passphrase:", self.ssh_pass)
+        layout.addRow("SSH Key Path:", self.ssh_key_row)
 
         save = QPushButton("💾 Save DB Profile")
         save.clicked.connect(self._validate)
-
         layout.addRow(save)
+
+        self._on_backend_change(self.backend_in.currentText())
+        self._on_tunnel_toggle()
+        self._on_ssh_auth_toggle(self.ssh_auth_method.currentText())
 
     def _browse_sqlite(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -312,9 +358,58 @@ class DbProfileDialog(QDialog):
             "",
             "SQLite (*.db *.sqlite *.sqlite3);;All (*)",
         )
-
         if path:
             self.sqlite_path.setText(path)
+
+    def _browse_ssh_key(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select SSH Private Key",
+            os.path.expanduser("~/.ssh"),
+        )
+        if path:
+            self.ssh_key_path.setText(path)
+
+    def _on_backend_change(self, backend: str) -> None:
+        is_sqlite = backend == "sqlite"
+        self.sqlite_row.setVisible(is_sqlite)
+        for w in (self.db_host, self.db_port, self.db_user, self.db_pass, self.use_tunnel):
+            w.setVisible(not is_sqlite)
+        if is_sqlite:
+            self.use_tunnel.setChecked(False)
+
+    def _on_tunnel_toggle(self, *args) -> None:
+        on = self.use_tunnel.isChecked() and self.backend_in.currentText() != "sqlite"
+        for w in (
+            self.ssh_profile_combo, self.ssh_host, self.ssh_port,
+            self.ssh_user, self.ssh_auth_method, self.ssh_pass, self.ssh_key_row
+        ):
+            w.setEnabled(on)
+
+    def _on_ssh_auth_toggle(self, method: str) -> None:
+        is_key = method == "SSH Key"
+        self.ssh_key_row.setEnabled(is_key and self.use_tunnel.isChecked())
+        if is_key:
+            self.ssh_pass.setPlaceholderText("Private key passphrase (optional)")
+        else:
+            self.ssh_pass.setPlaceholderText("SSH password")
+
+    def _on_ssh_profile_selected(self, text: str) -> None:
+        if text == "(Custom SSH Settings)":
+            return
+        profiles = getattr(self.main_parent, "profiles", {})
+        if not profiles and hasattr(self.main_parent, "main_window"):
+            profiles = getattr(self.main_parent.main_window, "profiles", {})
+        p = profiles.get(text)
+        if p:
+            self.ssh_host.setText(p.get("ssh_host", ""))
+            self.ssh_port.setText(str(p.get("ssh_port", "22")))
+            self.ssh_user.setText(p.get("ssh_user", ""))
+            auth = p.get("auth_method", "Password")
+            self.ssh_auth_method.setCurrentText(auth)
+            self.ssh_key_path.setText(p.get("ssh_key_path", ""))
+            if p.get("ssh_pass"):
+                self.ssh_pass.setText(p["ssh_pass"])
 
     def _validate(self) -> None:
         if not self.name_in.text().strip():
@@ -324,6 +419,7 @@ class DbProfileDialog(QDialog):
         self.accept()
 
     def get_data(self) -> dict:
+        prof_choice = self.ssh_profile_combo.currentText()
         return {
             "name": self.name_in.text().strip(),
             "backend": self.backend_in.currentText(),
@@ -334,10 +430,13 @@ class DbProfileDialog(QDialog):
             "db_name": self.db_name.text().strip(),
             "sqlite_path": self.sqlite_path.text().strip(),
             "use_tunnel": self.use_tunnel.isChecked(),
+            "ssh_profile": "" if prof_choice == "(Custom SSH Settings)" else prof_choice,
             "ssh_host": self.ssh_host.text().strip(),
             "ssh_user": self.ssh_user.text().strip(),
             "ssh_port": self.ssh_port.text().strip(),
+            "ssh_auth_method": self.ssh_auth_method.currentText(),
             "ssh_pass": self.ssh_pass.text(),
+            "ssh_key_path": self.ssh_key_path.text().strip(),
         }
 
 
@@ -860,6 +959,68 @@ class SnippetDialog(QDialog):
         }
 
 
+class SnippetVariablesDialog(QDialog):
+    """Prompts the user to fill in values for template snippet variables ({{var}} or {{var:default}})."""
+
+    def __init__(self, raw_cmd: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Snippet Parameters (Termius Style)")
+        self.setMinimumWidth(460)
+        self.raw_cmd = raw_cmd
+        self._pattern = re.compile(r"\{\{([a-zA-Z0-9_-]+)(?::([^}]*))?\}\}")
+
+        matches = self._pattern.findall(raw_cmd)
+        self.var_inputs: dict[str, QLineEdit] = {}
+
+        layout = QVBoxLayout(self)
+
+        info_lbl = QLabel("Provide values for snippet variables:")
+        info_lbl.setStyleSheet("font-weight: bold; margin-bottom: 4px;")
+        layout.addWidget(info_lbl)
+
+        form = QFormLayout()
+        seen = set()
+        for var_name, default_val in matches:
+            if var_name in seen:
+                continue
+            seen.add(var_name)
+            edit = QLineEdit(default_val)
+            edit.textChanged.connect(self._update_preview)
+            form.addRow(f"{var_name}:", edit)
+            self.var_inputs[var_name] = edit
+
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Rendered Command Preview:"))
+        self.preview_lbl = QLabel()
+        self.preview_lbl.setStyleSheet(
+            "font-family: monospace; color: #3daee9; padding: 6px; background: #222; border: 1px solid #444; border-radius: 4px;"
+        )
+        self.preview_lbl.setWordWrap(True)
+        layout.addWidget(self.preview_lbl)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+        self._update_preview()
+
+    def _update_preview(self):
+        self.preview_lbl.setText(self.get_rendered_command())
+
+    def get_rendered_command(self) -> str:
+        def _replace_var(match):
+            name = match.group(1)
+            if name in self.var_inputs:
+                return self.var_inputs[name].text().strip()
+            return match.group(2) or ""
+
+        return self._pattern.sub(_replace_var, self.raw_cmd)
+
+
 class SnippetManagerDialog(QDialog):
     """
     Snippet library.
@@ -964,6 +1125,30 @@ class SnippetManagerDialog(QDialog):
                     "description": "Containers",
                     "category": "Docker",
                 },
+                {
+                    "name": "Docker Tail Logs",
+                    "command": "docker logs -f --tail={{lines:100}} {{container_name}}",
+                    "description": "Live tail container logs",
+                    "category": "Docker",
+                },
+                {
+                    "name": "Restart Service",
+                    "command": "sudo systemctl restart {{service_name:nginx}}",
+                    "description": "Restart systemd service",
+                    "category": "System",
+                },
+                {
+                    "name": "Search Log for Pattern",
+                    "command": "grep -rn \"{{pattern:error}}\" {{log_path:/var/log/syslog}}",
+                    "description": "Search log file with pattern",
+                    "category": "Log",
+                },
+                {
+                    "name": "MySQL Dump Database",
+                    "command": "mysqldump -u {{user:root}} -p {{database}} > {{output_file:backup.sql}}",
+                    "description": "Export database dump",
+                    "category": "Database",
+                },
             ]
 
             self.save()
@@ -1046,9 +1231,14 @@ class SnippetManagerDialog(QDialog):
             "run_snippet_in_terminal",
         ):
             snippet = item.data(0, Qt.ItemDataRole.UserRole)
+            cmd = snippet.get("command", "")
 
-            self.parent().run_snippet_in_terminal(
-                snippet.get("command", "")
-            )
+            if "{{" in cmd and "}}" in cmd:
+                dlg = SnippetVariablesDialog(cmd, self)
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                cmd = dlg.get_rendered_command()
+
+            self.parent().run_snippet_in_terminal(cmd)
 
             self.accept()

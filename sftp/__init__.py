@@ -34,6 +34,9 @@ from admin_suite.sftp.search import (
 from admin_suite.sftp.tab import (
     SFTPTab,
 )
+from admin_suite.sftp.external_editor import (
+    ExternalEditorManager,
+)
 
 __all__ = [
     "SftpAction",
@@ -45,4 +48,5 @@ __all__ = [
     "RemoteEditorTab",
     "RemoteSearchDialog",
     "SFTPTab",
+    "ExternalEditorManager",
 ]

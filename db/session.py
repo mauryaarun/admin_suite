@@ -6,7 +6,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sshtunnel import SSHTunnelForwarder
+try:
+    from sshtunnel import SSHTunnelForwarder
+    SSHTUNNEL_AVAILABLE = True
+except ImportError:
+    SSHTunnelForwarder = None
+    SSHTUNNEL_AVAILABLE = False
 
 from admin_suite.db.backends import BACKENDS
 
@@ -54,10 +59,22 @@ class TunnelManager:
             except Exception:
                 pass
 
+        if not SSHTUNNEL_AVAILABLE or SSHTunnelForwarder is None:
+            raise RuntimeError(
+                "SSH tunneling for databases requires the 'sshtunnel' package. "
+                "Install it via: pip install sshtunnel"
+            )
+
         ssh_host = cfg.get("ssh_host", "")
         ssh_user = cfg.get("ssh_user", "")
         ssh_pass = cfg.get("ssh_pass") or None
         ssh_key = cfg.get("ssh_key_path") or None
+
+        if ssh_key:
+            import os
+            ssh_key = os.path.expanduser(ssh_key)
+            if not os.path.exists(ssh_key):
+                ssh_key = None
 
         ssh_port = _safe_int(cfg.get("ssh_port", 22), 22)
 
@@ -69,12 +86,20 @@ class TunnelManager:
                 "db_port is required when using an SSH tunnel."
             )
 
+        tunnel_kwargs: dict[str, Any] = {
+            "ssh_username": ssh_user,
+            "remote_bind_address": (remote_host, remote_port),
+        }
+        if ssh_key:
+            tunnel_kwargs["ssh_pkey"] = ssh_key
+            if ssh_pass:
+                tunnel_kwargs["ssh_private_key_password"] = ssh_pass
+        elif ssh_pass:
+            tunnel_kwargs["ssh_password"] = ssh_pass
+
         tunnel = SSHTunnelForwarder(
             (ssh_host, ssh_port),
-            ssh_username=ssh_user,
-            ssh_password=ssh_pass,
-            ssh_pkey=ssh_key,
-            remote_bind_address=(remote_host, remote_port),
+            **tunnel_kwargs,
         )
 
         tunnel.start()

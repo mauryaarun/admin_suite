@@ -81,6 +81,13 @@ class TableDetailTab(QWidget):
         schema_widget = QWidget()
         schema_layout = QVBoxLayout(schema_widget)
 
+        schema_bar = QHBoxLayout()
+        design_btn = QPushButton("🛠️ Design / Alter Table (HeidiSQL Mode)")
+        design_btn.clicked.connect(self.open_table_designer)
+        schema_bar.addWidget(design_btn)
+        schema_bar.addStretch()
+        schema_layout.addLayout(schema_bar)
+
         self.schema_tree = QTreeWidget()
         self.schema_tree.setHeaderLabels(
             ["Field", "Type", "Null", "Key", "Default", "Extra"]
@@ -143,6 +150,7 @@ class TableDetailTab(QWidget):
 
         self.data_model = SqlResultModel()
         self.data_table.setModel(self.data_model)
+        self.data_table.doubleClicked.connect(self.update_record)
 
         data_layout.addWidget(self.data_table)
 
@@ -240,6 +248,25 @@ class TableDetailTab(QWidget):
         self.data_table.resizeColumnsToContents()
 
         self.row_label.setText(f"{len(rows)} row(s)")
+
+    # ------------------------------------------------------------
+    # HeidiSQL Table Designer
+    # ------------------------------------------------------------
+
+    def open_table_designer(self) -> None:
+        from admin_suite.db.table_designer import TableDesignerDialog
+
+        dlg = TableDesignerDialog(
+            services=self.services,
+            session_manager=self.session_manager,
+            cfg=self.cfg,
+            db_name=self.db_name,
+            table_name=self.table_name,
+            initial_columns=self._columns_cache,
+            parent=self,
+        )
+        dlg.schema_altered.connect(self.load_schema)
+        dlg.exec()
 
     # ------------------------------------------------------------
     # CRUD helpers

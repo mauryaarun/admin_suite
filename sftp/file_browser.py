@@ -414,6 +414,9 @@ class FileBrowserPanel(QWidget):
                         menu.addAction("✏️ Open in Editor").triggered.connect(
                             lambda: self.file_action.emit("edit", first_full_remote, self.panel_id)
                         )
+                        menu.addAction("💻 Open in External Editor (FileZilla Mode)").triggered.connect(
+                            lambda: self.file_action.emit("external-edit", first_full_remote, self.panel_id)
+                        )
                     menu.addAction("🔐 Permissions (chmod)").triggered.connect(
                         lambda: self.file_action.emit(
                             "chmod",

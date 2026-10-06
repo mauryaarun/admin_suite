@@ -2,15 +2,11 @@
 Main SFTP tab with local/remote panels, transfer queue, and status log.
 """
 from __future__ import annotations
-
 import datetime
 import json
 import os
-import platform
 import shlex
-import subprocess
 from typing import Any, Optional
-
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
@@ -18,7 +14,6 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
-
 from admin_suite.sftp.dialogs import ChmodDialog
 from admin_suite.sftp.editor import RemoteEditorTab
 from admin_suite.sftp.exec_worker import RemoteExecThread
@@ -27,14 +22,10 @@ from admin_suite.sftp.models import SftpAction, SftpTask
 from admin_suite.sftp.rsync import RsyncDialog
 from admin_suite.sftp.search import RemoteSearchDialog
 from admin_suite.sftp.worker import SftpWorker
-
-from admin_suite.terminal import SshTerminalTab
-
-
+from admin_suite.sftp.external_editor import ExternalEditorManager
 
 class SFTPTab(QWidget):
     """SFTP browser tab."""
-
     def __init__(
         self, services, main_window=None, *,
         host: str = "", port: int = 22, user: str = "", creds=None,
@@ -52,11 +43,9 @@ class SFTPTab(QWidget):
         self.creds = creds
         self.name = name
         self.use_agent = bool(use_agent)
-
         if strict_host_keys is None:
             strict_host_keys = bool(self.services.config.get("ssh_strict_host_keys", False))
         self.strict_host_keys = bool(strict_host_keys)
-
         self.host_info = {
             "host": self.host, "port": self.port, "user": self.user,
             "creds": self.creds, "use_agent": self.use_agent,
@@ -78,13 +67,15 @@ class SFTPTab(QWidget):
         self._console_home: str = ""
         self._home_probe: Optional[RemoteExecThread] = None
         self._console_worker: Optional[RemoteExecThread] = None
-        self._terminal_process: Optional[subprocess.Popen] = None
 
         # Tasks pane state
         self._tasks_visible: bool = True
 
-        theme = self.services.theme.current
+        # External editor watcher (FileZilla parity)
+        self.external_editor = ExternalEditorManager(self.services, self)
+        self.external_editor.file_uploaded.connect(lambda remote_p, local_p: self.remote_panel.refresh())
 
+        theme = self.services.theme.current
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
@@ -145,14 +136,12 @@ class SFTPTab(QWidget):
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.local_panel = FileBrowserPanel(self.services, "local", mode="local")
         self.local_panel.file_action.connect(self.on_file_action)
-
         self.remote_panel = FileBrowserPanel(self.services, "remote", mode="remote")
         self.remote_panel.configure_remote(
             self.host, self.port, self.user, self.creds,
             use_agent=self.use_agent, strict_host_keys=self.strict_host_keys,
         )
         self.remote_panel.file_action.connect(self.on_file_action)
-
         h_splitter.addWidget(self.local_panel)
         h_splitter.addWidget(self.remote_panel)
         h_splitter.setSizes([600, 600])
@@ -193,52 +182,10 @@ class SFTPTab(QWidget):
         )
         self.bottom_tabs.addTab(self.sftp_log, "📜 Operation Log")
 
-
-        self._open_remote_terminal
-
-
-
-
-
-        # Tab 2: Remote Console (External Terminal Launcher)
-
+        # Tab 2: Remote Console (Quick Command Execution)
         console_widget = QWidget()
         console_lay = QVBoxLayout(console_widget)
         console_lay.setContentsMargins(10, 10, 10, 10)
-
-        console_info = QLabel(
-            "Launch a full interactive SSH terminal session to the remote host.\n"
-            "This opens an external terminal window with complete shell access."
-        )
-        console_info.setStyleSheet(f"color:{theme['text']};font-size:12px;margin-bottom:10px;")
-        console_info.setWordWrap(True)
-        console_lay.addWidget(console_info)
-
-
-
-        term_btn_row = QHBoxLayout()
-        
-        self.launch_term_btn = QPushButton("🖥️ Launch SSH Terminal")
-        self.launch_term_btn.setStyleSheet(
-            f"background:{theme['accent']};color:white;padding:10px 20px;"
-            f"font-size:13px;font-weight:bold;border-radius:4px;"
-        )
-        #self.launch_term_btn.clicked.connect(self._launch_external_terminal)
-        self.launch_term_btn.clicked.connect(self._open_remote_terminal)
-        term_btn_row.addWidget(self.launch_term_btn)
-
-        self.term_status = QLabel("Ready to launch")
-        self.term_status.setStyleSheet(f"color:{theme['sub']};font-size:11px;")
-        term_btn_row.addWidget(self.term_status)
-        term_btn_row.addStretch()
-
-        console_lay.addLayout(term_btn_row)
-
-        # Quick command execution (fallback)
-        console_lay.addSpacing(15)
-        quick_label = QLabel("Or execute a quick command:")
-        quick_label.setStyleSheet(f"color:{theme['sub']};font-size:11px;")
-        console_lay.addWidget(quick_label)
 
         cmd_row = QHBoxLayout()
         self.console_prompt = QLabel(f"{self.user}@{self.host}:~$ ")
@@ -253,21 +200,19 @@ class SFTPTab(QWidget):
         self.console_input.setPlaceholderText("Enter command and press Enter…")
         self.console_input.returnPressed.connect(self._run_console_cmd)
         cmd_row.addWidget(self.console_input, 1)
-
         console_lay.addLayout(cmd_row)
 
         self.console_out = QPlainTextEdit()
         self.console_out.setReadOnly(True)
         self.console_out.setFont(QFont("JetBrains Mono, Consolas", 10))
-        self.console_out.setMaximumHeight(100)
         self.console_out.setStyleSheet(
             f"background:{theme['panel']};color:{theme['text']};"
             f"border:1px solid {theme['border']};"
         )
-        self.console_out.setPlaceholderText("Quick command output will appear here...")
-        console_lay.addWidget(self.console_out)
+        self.console_out.setPlaceholderText("Command output will appear here...")
+        console_lay.addWidget(self.console_out, 1)
 
-        self.bottom_tabs.addTab(console_widget, "💻 Send Remote Commands")
+        self.bottom_tabs.addTab(console_widget, "💻 Remote Console")
 
         # Assemble main vertical splitter
         self.main_vsplitter.addWidget(h_splitter)
@@ -277,7 +222,6 @@ class SFTPTab(QWidget):
         self.main_vsplitter.setStretchFactor(1, 1)
         self.main_vsplitter.setStretchFactor(2, 1)
         self.main_vsplitter.setSizes([600, 150, 220])
-
         layout.addWidget(self.main_vsplitter, 1)
 
         # ---- progress + speed ----
@@ -298,153 +242,6 @@ class SFTPTab(QWidget):
 
         self._resolve_remote_home()
         self._render_queue()
-
-    # ------------------------------------------------------------
-    # External Terminal Launch
-    # ------------------------------------------------------------
-
-    def _connect_terminal(self, terminal) -> None:
-        try:
-            terminal.input_sent.disconnect(self._on_terminal_input)
-        except Exception:
-            pass
-
-        terminal.input_sent.connect(self._on_terminal_input)
-
-
-    def _on_terminal_input(self, data: str) -> None:
-        if not self.broadcast_enabled:
-            return
-
-        sender = self.sender()
-
-        for terminal in self.get_all_terminals():
-            if terminal is not sender and hasattr(terminal, "inject_input"):
-                terminal.inject_input(data)
-
-
-    def _open_remote_terminal(self) -> None:
-        try:
-
-            tab = SshTerminalTab(
-                self.services,
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                creds=self.creds,
-                initial_cmd="/bin/date",
-                name=self.name,
-                use_jump="",
-                jump_host="",
-                jump_port="",
-                jump_user="",
-                jump_creds="",
-                use_agent="",
-                profile_name="",
-            )
-
-            self._connect_terminal(tab)
-
-            index = self.bottom_tabs.addTab(tab, f"🐚 Remote Terminal")
-            self.bottom_tabs.setCurrentIndex(index)
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Launch Failed",
-                f"Failed to launch remote terminal:\n{e}"
-            )
-            self.term_status.setText(f"❌ Launch failed: {e}")
-
-    def _launch_external_terminal(self) -> None:
-        """Launch an external terminal with SSH connection."""
-        system = platform.system()
-        
-        # Build SSH command
-        ssh_cmd = ["ssh"]
-        if self.port != 22:
-            ssh_cmd.extend(["-p", str(self.port)])
-        ssh_cmd.append(f"{self.user}@{self.host}")
-
-        try:
-            if system == "Linux":
-                # Try common terminal emulators in order of preference
-                terminals = [
-                    ["gnome-terminal", "--"],
-                    ["konsole", "--noclose", "-e"],
-                    ["xfce4-terminal", "--hold", "-e"],
-                    ["xterm", "-e"],
-                    ["mate-terminal", "--"],
-                    ["terminator", "-e"],
-                ]
-                
-                launched = False
-                for term_cmd in terminals:
-                    try:
-                        full_cmd = term_cmd + ssh_cmd
-                        subprocess.Popen(full_cmd)
-                        launched = True
-                        self.term_status.setText(f"✅ Launched {term_cmd[0]}")
-                        self._log(f"External terminal launched: {term_cmd[0]}")
-                        break
-                    except FileNotFoundError:
-                        continue
-                
-                if not launched:
-                    QMessageBox.warning(
-                        self, "Terminal Not Found",
-                        "Could not find a supported terminal emulator.\n"
-                        "Please install gnome-terminal, konsole, xterm, or another terminal."
-                    )
-                    
-            elif system == "Darwin":  # macOS
-                # Use Terminal.app or iTerm2
-                try:
-                    # Try iTerm2 first
-                    subprocess.Popen([
-                        "open", "-a", "iTerm",
-                        f"ssh://{self.user}@{self.host}:{self.port}"
-                    ])
-                    self.term_status.setText("✅ Launched iTerm")
-                    self._log("External terminal launched: iTerm")
-                except Exception:
-                    # Fall back to Terminal.app
-                    subprocess.Popen([
-                        "open", "-a", "Terminal",
-                        f"ssh://{self.user}@{self.host}:{self.port}"
-                    ])
-                    self.term_status.setText("✅ Launched Terminal.app")
-                    self._log("External terminal launched: Terminal.app")
-                    
-            elif system == "Windows":
-                # Use Windows Terminal, PowerShell, or cmd
-                try:
-                    # Try Windows Terminal first
-                    subprocess.Popen([
-                        "wt", "ssh", f"{self.user}@{self.host}",
-                        "-p", str(self.port)
-                    ])
-                    self.term_status.setText("✅ Launched Windows Terminal")
-                    self._log("External terminal launched: Windows Terminal")
-                except FileNotFoundError:
-                    # Fall back to cmd
-                    subprocess.Popen([
-                        "cmd", "/c", "start", "cmd", "/k",
-                        " ".join(ssh_cmd)
-                    ])
-                    self.term_status.setText("✅ Launched cmd")
-                    self._log("External terminal launched: cmd")
-            else:
-                QMessageBox.warning(
-                    self, "Unsupported Platform",
-                    f"External terminal launch not supported on {system}.\n"
-                    "Please use the quick command execution below."
-                )
-                
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Launch Failed",
-                f"Failed to launch external terminal:\n{e}"
-            )
-            self.term_status.setText(f"❌ Launch failed: {e}")
 
     # ------------------------------------------------------------
     # Remote home directory resolution
@@ -666,7 +463,6 @@ class SFTPTab(QWidget):
             self.speed_label.setText("")
             self._render_queue()
             return
-
         task = self._queue.pop(0)
         self._active_task = task
         self.progress.setVisible(True)
@@ -681,7 +477,6 @@ class SFTPTab(QWidget):
             f"{task.remote_path or task.local_path}"
         )
         self._render_queue()
-
         worker = self._make_worker()
         worker.set_task(task)
         worker.transfer_progress.connect(self._progress)
@@ -711,7 +506,6 @@ class SFTPTab(QWidget):
             self.remote_panel.refresh()
         elif task.action == SftpAction.DOWNLOAD:
             self.local_panel.refresh()
-
         self._active_transfer = None
         self._active_task = None
         QTimer.singleShot(150, self._next_transfer)
@@ -720,7 +514,6 @@ class SFTPTab(QWidget):
         self.status_label.setText(f"❌ {err}")
         self._log(f"❌ ERROR: {err}")
         self.services.notifications.push("error", "Transfer failed", err)
-
         self._active_transfer = None
         self._active_task = None
         QTimer.singleShot(150, self._next_transfer)
@@ -746,14 +539,11 @@ class SFTPTab(QWidget):
         if not cmd:
             return
         self.console_input.clear()
-
         if not self._console_cwd:
             self._console_cwd = self.remote_panel.current_path or "/"
-
         cwd_display = self._fmt_cwd(self._console_cwd)
         self.console_out.appendPlainText(f"{self.user}@{self.host}:{cwd_display}$ {cmd}")
         self.console_input.setEnabled(False)
-
         marker = "___ADMINSUITE_CWD___"
         wrapped = (
             f"cd {shlex.quote(self._console_cwd)} 2>/dev/null; "
@@ -763,7 +553,6 @@ class SFTPTab(QWidget):
             f"pwd; "
             f"exit $__ec"
         )
-
         self._console_worker = RemoteExecThread(self.host_info, wrapped, timeout=120)
         self._console_worker.finished_cmd.connect(self._console_done)
         self._console_worker.start()
@@ -771,10 +560,8 @@ class SFTPTab(QWidget):
     def _console_done(self, out: str, rc: int) -> None:
         self.console_input.setEnabled(True)
         self.console_input.setFocus()
-
         marker = "___ADMINSUITE_CWD___"
         actual_out = out
-
         if marker in out:
             before, after = out.rsplit(marker, 1)
             actual_out = before.rstrip("\n")
@@ -783,13 +570,10 @@ class SFTPTab(QWidget):
                 new_cwd = lines[-1].strip()
                 if new_cwd and new_cwd.startswith("/"):
                     self._console_cwd = new_cwd
-
         if actual_out.strip():
             self.console_out.appendPlainText(actual_out)
-
         if rc != 0:
             self.console_out.appendPlainText(f"[Process exited with code {rc}]")
-
         self._update_console_prompt()
         self.console_out.appendPlainText("")
         self.console_out.moveCursor(QTextCursor.MoveOperation.End)
@@ -806,7 +590,8 @@ class SFTPTab(QWidget):
                     self.main_window.tabs.setCurrentIndex(idx)
                 else:
                     tab.show()
-
+            elif action == "external-edit":
+                self.external_editor.edit_remote_file(path, self.host_info)
             elif action == "chmod":
                 try:
                     data = json.loads(path)
@@ -830,7 +615,6 @@ class SFTPTab(QWidget):
                     ))
                     worker.status_update.connect(self._log)
                     self._run_op_worker(worker)
-
             elif action == "delete":
                 worker = self._make_worker()
                 task = SftpTask(
@@ -845,7 +629,6 @@ class SFTPTab(QWidget):
                 ))
                 worker.status_update.connect(self._log)
                 self._run_op_worker(worker)
-
             elif action == "rename":
                 try:
                     data = json.loads(path)
@@ -866,7 +649,6 @@ class SFTPTab(QWidget):
                 ))
                 worker.status_update.connect(self._log)
                 self._run_op_worker(worker)
-
             elif action == "mkdir":
                 name, ok = QInputDialog.getText(self, "New Folder", "Name:")
                 if not (ok and name):
@@ -894,7 +676,6 @@ class SFTPTab(QWidget):
                     ))
                     worker.status_update.connect(self._log)
                     self._run_op_worker(worker)
-
             elif action == "upload":
                 self._enqueue(SftpTask(
                     action=SftpAction.UPLOAD, local_path=path,

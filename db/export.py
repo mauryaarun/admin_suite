@@ -9,9 +9,10 @@ import json
 import os
 import sqlite3
 import subprocess
-from typing import Any, Optional
-
-from sshtunnel import SSHTunnelForwarder
+try:
+    from sshtunnel import SSHTunnelForwarder
+except ImportError:
+    SSHTunnelForwarder = None
 
 from admin_suite.db.quoting import sql_literal
 

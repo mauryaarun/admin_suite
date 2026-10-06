@@ -80,6 +80,8 @@ from admin_suite.ansible.tab import AnsibleTab
 from admin_suite.ansible.playbook import AnsiblePlaybookTab
 
 from admin_suite.sysadmin.dashboard import SysAdminTab
+from admin_suite.web.tab import WebManagerTab
+from admin_suite.security.tab import SecurityHubTab
 
 from admin_suite.vpn.service import VpnService
 
@@ -387,6 +389,10 @@ class MainWindow(QMainWindow):
 
         tool_buttons = [
             ("⚡ Local Shell", lambda: self.add_local_command_tab("bash", "Local Shell")),
+            ("🛡️ Security Hub", self.open_security_hub_selected),
+            ("🔌 Port Forwarding & Tunnels", lambda: self.open_port_forwarding()),
+            ("🌐 Web Hosting Manager", self.open_web_manager_selected),
+            ("🖥 SysAdmin Dashboard", self.open_sysadmin_selected),
             ("📝 Ansible Multihost", self.open_ansible_tab),
             ("📜 Ansible Playbook", self.open_ansible_playbook_tab),
             ("📝 Snippets", self.open_snippets),
@@ -470,7 +476,7 @@ class MainWindow(QMainWindow):
         )
         self.broadcast_btn.clicked.connect(self.toggle_broadcast)
 
-        self.vpn_btn = QPushButton("⚡ VPN: Disconnected")
+        self.vpn_btn = QPushButton("⚡ Connect VPN")
         self.vpn_btn.setStyleSheet(
             f"background:{theme['warn']};color:white;padding:6px 12px;font-weight:bold;"
         )
@@ -536,24 +542,21 @@ class MainWindow(QMainWindow):
         self.ai_tab = AIAssistantTab(self.services, self)
         self.tabs.addTab(self.ai_tab, "🤖 Assistant")
 
-        self.tabs.tabBar().setTabButton(
-            0,
-            QTabBar.ButtonPosition.RightSide,
-            None,
-        )
-
         # Debug console.
         self.debug_console = QTextEdit()
         self.debug_console.setReadOnly(True)
         self.debug_console.setFont(QFont("JetBrains Mono, Consolas", 9))
-
         self.tabs.addTab(self.debug_console, "⚠️ Debug")
 
-        self.tabs.tabBar().setTabButton(
-            1,
-            QTabBar.ButtonPosition.RightSide,
-            None,
-        )
+        # Disable close buttons on permanent tabs
+        for tab_widget in (self.db_manager_widget, self.ai_tab, self.debug_console):
+            t_idx = self.tabs.indexOf(tab_widget)
+            if t_idx >= 0:
+                self.tabs.tabBar().setTabButton(
+                    t_idx,
+                    QTabBar.ButtonPosition.RightSide,
+                    None,
+                )
 
         # MySQL status button inside DB manager toolbar.
         try:
@@ -683,12 +686,12 @@ class MainWindow(QMainWindow):
             self.vpn_btn.setEnabled(True)
 
             if connected:
-                text = "🔌 VPN: Connected"
+                text = "🔌 Disconnect VPN"
                 status = "● VPN: Connected ✅"
                 color = theme["ok"]
 
             else:
-                text = "⚡ VPN: Disconnected"
+                text = "⚡ Connect VPN"
                 status = "● VPN: Disconnected"
                 color = theme["warn"]
 
@@ -1035,6 +1038,18 @@ class MainWindow(QMainWindow):
 
             menu.addAction("🖥 SysAdmin Dashboard").triggered.connect(
                 lambda: self.open_sysadmin(name)
+            )
+
+            menu.addAction("🌐 Web Hosting Manager").triggered.connect(
+                lambda: self.open_web_manager(name)
+            )
+
+            menu.addAction("🛡️ Security Hub").triggered.connect(
+                lambda: self.open_security_hub(name)
+            )
+
+            menu.addAction("🔌 Port Forwarding & Tunnels").triggered.connect(
+                lambda: self.open_port_forwarding(name)
             )
 
             menu.addAction("⧉ Split Terminal").triggered.connect(
@@ -1672,6 +1687,99 @@ class MainWindow(QMainWindow):
         else:
             self.open_sysadmin_local()
 
+    def open_web_manager(self, name: str):
+        data = self.profiles.get(name)
+        tab = WebManagerTab(
+            self.services,
+            name,
+            data,
+            self,
+        )
+        index = self.tabs.addTab(tab, f"🌐 {name}")
+        self.tabs.setCurrentIndex(index)
+        return tab
+
+    def open_web_manager_local(self):
+        tab = WebManagerTab(
+            self.services,
+            "Localhost",
+            None,
+            self,
+        )
+        index = self.tabs.addTab(tab, "🌐 Localhost")
+        self.tabs.setCurrentIndex(index)
+        return tab
+
+    def open_web_manager_selected(self):
+        name = self._get_selected_profile_name()
+        if name:
+            self.open_web_manager(name)
+        else:
+            self.open_web_manager_local()
+
+    def open_security_hub(self, name: str):
+        data = self.profiles.get(name)
+        tab = SecurityHubTab(
+            self.services,
+            name,
+            data,
+            self,
+        )
+        index = self.tabs.addTab(tab, f"🛡️ {name}")
+        self.tabs.setCurrentIndex(index)
+        return tab
+
+    def open_security_hub_local(self):
+        tab = SecurityHubTab(
+            self.services,
+            "Localhost",
+            None,
+            self,
+        )
+        index = self.tabs.addTab(tab, "🛡️ Localhost")
+        self.tabs.setCurrentIndex(index)
+        return tab
+
+    def open_security_hub_selected(self):
+        name = self._get_selected_profile_name()
+        if name:
+            self.open_security_hub(name)
+        else:
+            self.open_security_hub_local()
+
+    def open_port_forwarding(self, profile_name: Optional[str] = None):
+        if not profile_name:
+            profile_name = self._get_selected_profile_name()
+
+        if not profile_name:
+            if self.profiles:
+                items = list(self.profiles.keys())
+                item, ok = QInputDialog.getItem(
+                    self, "Port Forwarding & Tunnels", "Select SSH Profile for Tunneling:", items, 0, False
+                )
+                if ok and item:
+                    profile_name = item
+                else:
+                    return
+            else:
+                QMessageBox.information(
+                    self, "Port Forwarding", "Add an SSH profile first to configure port forwarding."
+                )
+                return
+
+        data = self.profiles.get(profile_name, {})
+        from admin_suite.ui.networking_dialog import NetworkingToolsDialog
+        dialog = NetworkingToolsDialog(
+            services=self.services,
+            host=data.get("host", "localhost"),
+            port=int(data.get("port", 22)),
+            username=data.get("user", ""),
+            creds=data.get("password") or data.get("key"),
+            parent=self,
+            profile_data=data,
+        )
+        dialog.show()
+
     def open_split_selected(self):
         name = self._get_selected_profile_name()
 
@@ -1740,11 +1848,18 @@ class MainWindow(QMainWindow):
     # Tab management
     # ------------------------------------------------------------
 
-    def close_tab(self, index: int) -> None:
-        if index <= 1:
-            return
+    def _is_permanent_tab(self, widget) -> bool:
+        permanent = (
+            getattr(self, "db_manager_widget", None),
+            getattr(self, "ai_tab", None),
+            getattr(self, "debug_console", None),
+        )
+        return widget is not None and widget in permanent
 
+    def close_tab(self, index: int) -> None:
         widget = self.tabs.widget(index)
+        if self._is_permanent_tab(widget):
+            return
 
         if isinstance(widget, SshTerminalTab):
             self._last_closed = (
@@ -1836,13 +1951,17 @@ class MainWindow(QMainWindow):
             self.tabs.setTabText(index, name)
 
     def _close_others(self, keep: int):
-        for i in range(self.tabs.count() - 1, 1, -1):
-            if i != keep:
+        keep_widget = self.tabs.widget(keep)
+        for i in range(self.tabs.count() - 1, -1, -1):
+            w = self.tabs.widget(i)
+            if w != keep_widget and not self._is_permanent_tab(w):
                 self.close_tab(i)
 
     def _close_right(self, index: int):
         for i in range(self.tabs.count() - 1, index, -1):
-            self.close_tab(i)
+            w = self.tabs.widget(i)
+            if not self._is_permanent_tab(w):
+                self.close_tab(i)
 
     # ------------------------------------------------------------
     # Sidebar
@@ -1917,6 +2036,26 @@ class MainWindow(QMainWindow):
                 "cb": self.open_sysadmin_selected,
             },
             {
+                "name": "Open Web Hosting Manager (selected profile)",
+                "cb": self.open_web_manager_selected,
+            },
+            {
+                "name": "Open Web Hosting Manager (Localhost)",
+                "cb": self.open_web_manager_local,
+            },
+            {
+                "name": "Open Security Hub (selected profile)",
+                "cb": self.open_security_hub_selected,
+            },
+            {
+                "name": "Open Security Hub (Localhost)",
+                "cb": self.open_security_hub_local,
+            },
+            {
+                "name": "Port Forwarding & Tunnels (selected profile)",
+                "cb": lambda: self.open_port_forwarding(),
+            },
+            {
                 "name": "Split Terminal (selected profile)",
                 "cb": self.open_split_selected,
             },
@@ -1974,6 +2113,30 @@ class MainWindow(QMainWindow):
                 }
             )
 
+            commands.append(
+                {
+                    "name": f"Web: {name}",
+                    "hint": "hosting",
+                    "cb": lambda n=name: self.open_web_manager(n),
+                }
+            )
+
+            commands.append(
+                {
+                    "name": f"Security: {name}",
+                    "hint": "firewall/fail2ban/audit",
+                    "cb": lambda n=name: self.open_security_hub(n),
+                }
+            )
+
+            commands.append(
+                {
+                    "name": f"Port Forwarding: {name}",
+                    "hint": "ssh tunnels",
+                    "cb": lambda n=name: self.open_port_forwarding(n),
+                }
+            )
+
         commands.append(
             {
                 "name": "Add DB Profile",
@@ -2027,6 +2190,13 @@ class MainWindow(QMainWindow):
         SnippetManagerDialog(self, self.services).exec()
 
     def run_snippet_in_terminal(self, command: str):
+        if "{{" in command and "}}" in command:
+            from admin_suite.ui.dialogs import SnippetVariablesDialog
+            dlg = SnippetVariablesDialog(command, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            command = dlg.get_rendered_command()
+
         index = self.tabs.currentIndex()
 
         if index > 1:
