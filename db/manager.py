@@ -601,19 +601,23 @@ class DatabaseManagerWidget(QWidget):
 
     def _filter_tree(self, text: str) -> None:
         pattern = text.strip().lower()
-        for i in range(self.tree.topLevelItemCount()):
-            db_item = self.tree.topLevelItem(i)
-            db_match = pattern in db_item.text(0).lower()
-            any_child_match = False
-            for j in range(db_item.childCount()):
-                child = db_item.child(j)
-                child_match = pattern in child.text(0).lower()
-                child.setHidden(bool(pattern and not child_match and not db_match))
-                if child_match:
-                    any_child_match = True
-            db_item.setHidden(bool(pattern and not db_match and not any_child_match))
-            if pattern and any_child_match:
-                db_item.setExpanded(True)
+        self.tree.blockSignals(True)
+        try:
+            for i in range(self.tree.topLevelItemCount()):
+                db_item = self.tree.topLevelItem(i)
+                db_match = pattern in db_item.text(0).lower()
+                any_child_match = False
+                for j in range(db_item.childCount()):
+                    child = db_item.child(j)
+                    child_match = pattern in child.text(0).lower()
+                    child.setHidden(bool(pattern and not child_match and not db_match))
+                    if child_match:
+                        any_child_match = True
+                db_item.setHidden(bool(pattern and not db_match and not any_child_match))
+                if pattern and any_child_match:
+                    db_item.setExpanded(True)
+        finally:
+            self.tree.blockSignals(False)
 
     def _filter_db_summary_tables(self, text: str) -> None:
         pattern = text.strip().lower()
