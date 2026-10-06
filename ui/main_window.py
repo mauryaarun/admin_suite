@@ -601,6 +601,8 @@ class MainWindow(QMainWindow):
             ("Ctrl+T", self._new_terminal_dialog),
             ("Ctrl+W", self._close_current_tab),
             ("Ctrl+B", self.toggle_sidebar),
+            ("Ctrl+Shift+A", self.toggle_copilot),
+            ("Ctrl+I", self.toggle_copilot),
             ("F8", self.toggle_broadcast),
             ("Ctrl+,", self.open_config),
             ("Ctrl+Shift+T", self._reopen_closed_tab),
