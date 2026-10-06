@@ -438,14 +438,22 @@ class MainWindow(QMainWindow):
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
 
+        # Copilot panel (Right sidebar)
+        from admin_suite.ai.assistant_tab import AIAssistantTab
+        self.ai_tab = AIAssistantTab(self.services, self)
+        self.ai_tab.setMinimumWidth(0)
+        self._copilot_width = 340
+
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.sidebar)
         self.main_splitter.addWidget(workspace)
+        self.main_splitter.addWidget(self.ai_tab)
 
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.setSizes([280, 1160])
+        self.main_splitter.setStretchFactor(2, 0)
+        self.main_splitter.setChildrenCollapsible(True)
+        self.main_splitter.setSizes([280, 820, 340])
 
         main_layout.addWidget(self.main_splitter)
 
@@ -489,6 +497,11 @@ class MainWindow(QMainWindow):
         )
         self.vpn_btn.clicked.connect(self.vpn.toggle)
 
+        self.copilot_toggle_btn = QPushButton("🤖 Copilot ▶")
+        self.copilot_toggle_btn.setToolTip("Toggle AI Copilot Sidebar (Ctrl+Shift+A or Ctrl+I)")
+        self.copilot_toggle_btn.clicked.connect(self.toggle_copilot)
+        self._update_copilot_btn_style(True)
+
         self.vpn_status = QLabel("● VPN: Unknown")
         self.vpn_status.setStyleSheet(
             f"color:{theme['sub']};padding:0 8px;"
@@ -498,6 +511,7 @@ class MainWindow(QMainWindow):
         navbar_layout.addWidget(palette_btn)
         navbar_layout.addWidget(self.broadcast_btn)
         navbar_layout.addWidget(self.vpn_btn)
+        navbar_layout.addWidget(self.copilot_toggle_btn)
         navbar_layout.addStretch()
         navbar_layout.addWidget(self.vpn_status)
 
@@ -544,11 +558,6 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.db_manager_widget, "🗄 Database Manager")
 
-        # Add AI Assistant Tab
-        from admin_suite.ai.assistant_tab import AIAssistantTab
-        self.ai_tab = AIAssistantTab(self.services, self)
-        self.tabs.addTab(self.ai_tab, "🤖 Assistant")
-
         # Debug console.
         self.debug_console = QTextEdit()
         self.debug_console.setReadOnly(True)
@@ -556,7 +565,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.debug_console, "⚠️ Debug")
 
         # Disable close buttons on permanent tabs
-        for tab_widget in (self.db_manager_widget, self.ai_tab, self.debug_console):
+        for tab_widget in (self.db_manager_widget, self.debug_console):
             t_idx = self.tabs.indexOf(tab_widget)
             if t_idx >= 0:
                 self.tabs.tabBar().setTabButton(
