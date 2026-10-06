@@ -1391,6 +1391,10 @@ class DatabaseManagerWidget(QWidget):
 
         if data[0] == "schema":
             db_name = data[1]
+            # Don't wipe if real tables are already populated
+            if item.childCount() > 0 and item.child(0).text(0) != "Loading...":
+                return
+
             cache_key = ("tables", db_name)
             cached = self.schema_cache.get(cache_key)
 
@@ -1417,6 +1421,10 @@ class DatabaseManagerWidget(QWidget):
         elif data[0] == "table":
             db_name = data[1]
             table_name = data[2]
+
+            # Don't wipe if real columns are already populated
+            if item.childCount() > 0 and item.child(0).text(0) != "Loading...":
+                return
 
             cache_key = ("columns", db_name, table_name)
             cached = self.schema_cache.get(cache_key)
