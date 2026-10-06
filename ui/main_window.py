@@ -1862,6 +1862,9 @@ class MainWindow(QMainWindow):
         elif isinstance(widget, SplitTerminalTab) and widget.terminals:
             QTimer.singleShot(50, widget.terminals[-1].force_focus)
 
+        if hasattr(self, "ai_tab") and self.ai_tab.isVisible():
+            self.ai_tab.update_context()
+
     # ------------------------------------------------------------
     # Tab management
     # ------------------------------------------------------------
