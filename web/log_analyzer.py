@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -27,6 +28,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.export import ReportExporter
 
 # Combined log format regex: IP - - [date] "METHOD PATH HTTP" STATUS BYTES "REFERRER" "USER-AGENT"
 _LOG_REGEX = re.compile(
@@ -59,8 +62,9 @@ class WebLogAnalyzerWidget(QWidget):
         self.log_source.addItems([
             "Nginx Access (/var/log/nginx/access.log)",
             "Nginx Error (/var/log/nginx/error.log)",
-            "Apache Access (/var/log/apache2/access.log)",
-            "Apache Error (/var/log/apache2/error.log)",
+            "Apache/HTTPD Access (Debian & RHEL)",
+            "Apache/HTTPD Error (Debian & RHEL)",
+            "Caddy Logs (journalctl / access.log)",
         ])
         self.log_source.currentTextChanged.connect(lambda *_: self.refresh())
         toolbar.addWidget(self.log_source)
@@ -75,6 +79,11 @@ class WebLogAnalyzerWidget(QWidget):
         self.filter_in.setPlaceholderText("🔍 Filter by IP, Path, Status (e.g. 404, /api)...")
         self.filter_in.textChanged.connect(self._apply_filter)
         toolbar.addWidget(self.filter_in, 1)
+
+        export_btn = QPushButton("📤 Export Logs")
+        export_btn.setToolTip("Export structured request table or raw logs to file")
+        export_btn.clicked.connect(self._export_logs)
+        toolbar.addWidget(export_btn)
 
         self.refresh_btn = QPushButton("🔄 Refresh")
         self.refresh_btn.clicked.connect(self.refresh)
@@ -113,6 +122,7 @@ class WebLogAnalyzerWidget(QWidget):
         self.raw_view = QPlainTextEdit()
         self.raw_view.setReadOnly(True)
         self.raw_view.setFont(QFont("JetBrains Mono, Consolas", 9))
+        ReportExporter.attach_export_context_menu(self.raw_view)
         self.tabs.addTab(self.raw_view, "📜 Raw Log Output")
 
         layout.addWidget(self.tabs, 1)
@@ -139,7 +149,7 @@ class WebLogAnalyzerWidget(QWidget):
         return frame
 
     def refresh(self) -> None:
-        """Fetch selected log file contents."""
+        """Fetch selected log file contents across Debian and RHEL systems."""
         source = self.log_source.currentText()
         lines = int(self.lines_combo.currentText())
 
@@ -147,10 +157,24 @@ class WebLogAnalyzerWidget(QWidget):
             cmd = f"tail -n {lines} /var/log/nginx/access.log 2>/dev/null || echo 'access.log not accessible'"
         elif "Nginx Error" in source:
             cmd = f"tail -n {lines} /var/log/nginx/error.log 2>/dev/null || echo 'error.log not accessible'"
-        elif "Apache Access" in source:
-            cmd = f"tail -n {lines} /var/log/apache2/access.log 2>/dev/null || echo 'access.log not accessible'"
+        elif "Apache/HTTPD Access" in source:
+            cmd = (
+                f"tail -n {lines} /var/log/apache2/access.log 2>/dev/null "
+                f"|| tail -n {lines} /var/log/httpd/access_log 2>/dev/null "
+                f"|| tail -n {lines} /var/log/httpd/access.log 2>/dev/null "
+                f"|| echo 'Apache/HTTPD access log not accessible'"
+            )
+        elif "Apache/HTTPD Error" in source:
+            cmd = (
+                f"tail -n {lines} /var/log/apache2/error.log 2>/dev/null "
+                f"|| tail -n {lines} /var/log/httpd/error_log 2>/dev/null "
+                f"|| tail -n {lines} /var/log/httpd/error.log 2>/dev/null "
+                f"|| echo 'Apache/HTTPD error log not accessible'"
+            )
+        elif "Caddy" in source:
+            cmd = f"journalctl -u caddy -n {lines} --no-pager 2>/dev/null || tail -n {lines} /var/log/caddy/access.log 2>/dev/null || echo 'Caddy log not accessible'"
         else:
-            cmd = f"tail -n {lines} /var/log/apache2/error.log 2>/dev/null || echo 'error.log not accessible'"
+            cmd = f"tail -n {lines} /var/log/messages 2>/dev/null || tail -n {lines} /var/log/syslog 2>/dev/null || echo 'no log accessible'"
 
         self.status_message.emit("Fetching web server logs...")
 
@@ -249,3 +273,23 @@ class WebLogAnalyzerWidget(QWidget):
             if text in r["path"].lower() or text in r["ip"] or text in r["status"] or text in r["method"].lower()
         ]
         self._render_table(filtered)
+
+    def _export_logs(self) -> None:
+        """Export structured requests table or raw log output."""
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export Requests Table as CSV")
+        json_act = menu.addAction("📄 Export Requests Table as JSON")
+        raw_act = menu.addAction("📜 Export Raw Logs to File (.log/.txt)")
+        pos = self.sender().mapToGlobal(self.sender().rect().bottomLeft()) if self.sender() else self.mapToGlobal(self.pos())
+        action = menu.exec(pos)
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "web_access_requests.csv", "Export Requests Table to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "web_access_requests.json", "Export Requests Table to JSON")
+        elif action == raw_act:
+            raw_text = self.raw_view.toPlainText()
+            ReportExporter.export_text_file(
+                self, raw_text, "web_server_logs.log", "Export Raw Web Server Logs",
+                "Log Files (*.log);;Text Files (*.txt);;All Files (*)"
+            )
+

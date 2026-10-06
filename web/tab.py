@@ -28,6 +28,7 @@ from admin_suite.web.vhosts import VHostManagerWidget
 from admin_suite.web.ssl_manager import SSLManagerWidget
 from admin_suite.web.runtimes import RuntimesManagerWidget
 from admin_suite.web.log_analyzer import WebLogAnalyzerWidget
+from admin_suite.web.tools import WebToolsWidget
 
 
 class WebManagerTab(QWidget):
@@ -117,6 +118,11 @@ class WebManagerTab(QWidget):
         self.logs_mgr.status_message.connect(self._set_status)
         self.tabs.addTab(self.logs_mgr, "📜 Logs & Analytics")
 
+        # 5. Web Tools & SELinux Policies (RHEL & Debian)
+        self.tools_mgr = WebToolsWidget(self.services, self.execute_command, self)
+        self.tools_mgr.status_message.connect(self._set_status)
+        self.tabs.addTab(self.tools_mgr, "🛠️ Web Tools & SELinux")
+
         layout.addWidget(self.tabs, 1)
 
         # Status Bar
@@ -192,14 +198,23 @@ class WebManagerTab(QWidget):
                     active = len(parts) > 2 and parts[2] == "active"
 
                     target_badge = self.badge_nginx if srv == "nginx" else self.badge_apache
+                    display_name = "Apache" if srv in ("apache2", "httpd") else srv.capitalize()
                     if active:
-                        target_badge.setText(f"{srv.capitalize()}: ● Active")
+                        target_badge.setText(f"{display_name}: ● Active")
                         target_badge.setStyleSheet(f"border:1px solid {ok_color}; color:{ok_color}; padding:2px 6px; border-radius:3px;")
                     elif installed:
-                        target_badge.setText(f"{srv.capitalize()}: Inactive")
+                        target_badge.setText(f"{display_name}: Inactive")
                         target_badge.setStyleSheet(f"border:1px solid {sub_color}; color:{sub_color}; padding:2px 6px; border-radius:3px;")
                     else:
-                        target_badge.setText(f"{srv.capitalize()}: Not Installed")
+                        target_badge.setText(f"{display_name}: Not Installed")
+                elif "php" in srv and "fpm" in srv:
+                    st = parts[1] if len(parts) > 1 else "inactive"
+                    if st == "active":
+                        self.badge_php.setText(f"PHP-FPM: ● Active")
+                        self.badge_php.setStyleSheet(f"border:1px solid {ok_color}; color:{ok_color}; padding:2px 6px; border-radius:3px;")
+                    elif self.badge_php.text() == "PHP-FPM: ?":
+                        self.badge_php.setText(f"PHP-FPM: Inactive")
+                        self.badge_php.setStyleSheet(f"border:1px solid {sub_color}; color:{sub_color}; padding:2px 6px; border-radius:3px;")
             elif line == "certbot_installed":
                 self.badge_certbot.setText("Certbot: ● Ready")
                 self.badge_certbot.setStyleSheet(f"border:1px solid {ok_color}; color:{ok_color}; padding:2px 6px; border-radius:3px;")
@@ -208,11 +223,14 @@ class WebManagerTab(QWidget):
                 self.badge_pm2.setStyleSheet(f"border:1px solid {ok_color}; color:{ok_color}; padding:2px 6px; border-radius:3px;")
 
     def _test_all_syntax(self) -> None:
-        cmd = "echo '=== NGINX ==='; nginx -t 2>&1 || true; echo '=== APACHE ==='; apachectl configtest 2>&1 || true"
+        from admin_suite.web.commands import test_all_syntax_cmd
+        cmd = test_all_syntax_cmd()
         self._set_status("Running pre-flight syntax checks...")
 
         def on_done(out: str, rc: int):
-            self.vhost_mgr.log_output.setPlainText(out) if hasattr(self.vhost_mgr, "log_output") else None
-            self.services.notifications.push("ok", "Syntax Checked", "View output in logs.")
+            self.tabs.setCurrentWidget(self.tools_mgr)
+            self.tools_mgr.syntax_output.setPlainText(out)
+            self.services.notifications.push("ok", "Syntax Checked", "Report displayed in Web Tools.")
 
         self.execute_command(cmd, on_done)
+

@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.ssh.remote_exec import RemoteExecThread
+from admin_suite.core.export import ReportExporter
 
 
 def generate_nginx_vhost(
@@ -335,6 +336,11 @@ class VHostManagerWidget(QWidget):
         reload_btn.clicked.connect(self._reload_server)
         toolbar.addWidget(reload_btn)
 
+        export_btn = QPushButton("📤 Export Sites")
+        export_btn.setToolTip("Export virtual hosts list to CSV or JSON")
+        export_btn.clicked.connect(self._export_sites_list)
+        toolbar.addWidget(export_btn)
+
         refresh_btn = QPushButton("🔄 Refresh List")
         refresh_btn.clicked.connect(self.refresh)
         toolbar.addWidget(refresh_btn)
@@ -372,6 +378,7 @@ class VHostManagerWidget(QWidget):
 
         self.config_editor = QPlainTextEdit()
         self.config_editor.setFont(QFont("JetBrains Mono, Consolas", 10))
+        ReportExporter.attach_export_context_menu(self.config_editor)
         editor_layout.addWidget(self.config_editor, 1)
 
         splitter.addWidget(editor_panel)
@@ -391,7 +398,17 @@ class VHostManagerWidget(QWidget):
         self.exec_fn(VHOST_DISCOVERY_CMD, on_done)
 
     def _parse_vhost_discovery(self, out: str) -> None:
-        sections = {"NGINX_AVAILABLE": [], "NGINX_ENABLED": [], "APACHE_AVAILABLE": [], "APACHE_ENABLED": []}
+        sections: dict[str, list[str]] = {
+            "NGINX_AVAILABLE": [],
+            "NGINX_ENABLED": [],
+            "NGINX_CONFD": [],
+            "NGINX_CONFD_DISABLED": [],
+            "APACHE_DEBIAN_AVAILABLE": [],
+            "APACHE_DEBIAN_ENABLED": [],
+            "APACHE_RHEL_CONFD": [],
+            "APACHE_RHEL_CONFD_DISABLED": [],
+            "CADDY_FILE": [],
+        }
         curr = None
         for line in out.splitlines():
             line = line.strip()
@@ -401,24 +418,82 @@ class VHostManagerWidget(QWidget):
                 sections[curr].append(line)
 
         entries = []
+
+        # 1. Nginx Debian (sites-available / sites-enabled)
         nginx_enabled = set(sections["NGINX_ENABLED"])
         for name in sections["NGINX_AVAILABLE"]:
             entries.append({
                 "server": "nginx",
                 "name": name,
                 "enabled": name in nginx_enabled,
+                "mode": "symlink",
                 "path": f"/etc/nginx/sites-available/{name}",
                 "enabled_path": f"/etc/nginx/sites-enabled/{name}",
             })
 
-        apache_enabled = set(sections["APACHE_ENABLED"])
-        for name in sections["APACHE_AVAILABLE"]:
+        # 2. Nginx RHEL (conf.d)
+        for name in sections["NGINX_CONFD"]:
+            entries.append({
+                "server": "nginx",
+                "name": name,
+                "enabled": True,
+                "mode": "confd",
+                "path": f"/etc/nginx/conf.d/{name}",
+                "enabled_path": f"/etc/nginx/conf.d/{name}",
+            })
+        for name in sections["NGINX_CONFD_DISABLED"]:
+            clean_name = name.removesuffix(".disabled").removesuffix(".bak")
+            entries.append({
+                "server": "nginx",
+                "name": clean_name,
+                "enabled": False,
+                "mode": "confd",
+                "path": f"/etc/nginx/conf.d/{name}",
+                "enabled_path": f"/etc/nginx/conf.d/{clean_name}",
+            })
+
+        # 3. Apache Debian (apache2 sites-available / sites-enabled)
+        apache_enabled = set(sections["APACHE_DEBIAN_ENABLED"])
+        for name in sections["APACHE_DEBIAN_AVAILABLE"]:
             entries.append({
                 "server": "apache2",
                 "name": name,
                 "enabled": name in apache_enabled,
+                "mode": "a2enmod",
                 "path": f"/etc/apache2/sites-available/{name}",
                 "enabled_path": f"/etc/apache2/sites-enabled/{name}",
+            })
+
+        # 4. Apache RHEL (httpd /etc/httpd/conf.d)
+        for name in sections["APACHE_RHEL_CONFD"]:
+            entries.append({
+                "server": "httpd",
+                "name": name,
+                "enabled": True,
+                "mode": "confd",
+                "path": f"/etc/httpd/conf.d/{name}",
+                "enabled_path": f"/etc/httpd/conf.d/{name}",
+            })
+        for name in sections["APACHE_RHEL_CONFD_DISABLED"]:
+            clean_name = name.removesuffix(".disabled").removesuffix(".bak")
+            entries.append({
+                "server": "httpd",
+                "name": clean_name,
+                "enabled": False,
+                "mode": "confd",
+                "path": f"/etc/httpd/conf.d/{name}",
+                "enabled_path": f"/etc/httpd/conf.d/{clean_name}",
+            })
+
+        # 5. Caddy
+        if "exists" in sections.get("CADDY_FILE", []):
+            entries.append({
+                "server": "caddy",
+                "name": "Caddyfile",
+                "enabled": True,
+                "mode": "single",
+                "path": "/etc/caddy/Caddyfile",
+                "enabled_path": "/etc/caddy/Caddyfile",
             })
 
         self._vhost_entries = entries
@@ -479,7 +554,6 @@ class VHostManagerWidget(QWidget):
             return
 
         content = self.config_editor.toPlainText()
-        # Save via base64 pipeline to preserve formatting and prevent shell escaping errors
         import base64
         b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         cmd = f"echo {b64} | base64 -d > {shlex.quote(self._active_file_path)}"
@@ -501,17 +575,38 @@ class VHostManagerWidget(QWidget):
             QMessageBox.information(self, "Selection", "Select a Virtual Host from the list first.")
             return
         item_data = selected[0].data(Qt.ItemDataRole.UserRole)
-        server = item_data["server"]
-        name = item_data["name"]
-        currently_enabled = item_data["enabled"]
+        server = item_data.get("server", "")
+        name = item_data.get("name", "")
+        mode = item_data.get("mode", "")
+        path = item_data.get("path", "")
+        currently_enabled = item_data.get("enabled", False)
 
-        if server == "nginx":
+        if mode == "single":
+            QMessageBox.information(self, "Info", f"{name} is a global single-file configuration.")
+            return
+
+        if mode == "confd":
+            # RHEL-style: rename .conf <-> .conf.disabled
+            if currently_enabled:
+                target_disabled = f"{path}.disabled"
+                cmd = f"mv {shlex.quote(path)} {shlex.quote(target_disabled)}"
+            else:
+                target_enabled = item_data.get("enabled_path") or path.removesuffix(".disabled").removesuffix(".bak")
+                cmd = f"mv {shlex.quote(path)} {shlex.quote(target_enabled)}"
+        elif server == "nginx":
             if currently_enabled:
                 cmd = f"rm -f /etc/nginx/sites-enabled/{shlex.quote(name)}"
             else:
                 cmd = f"ln -sf /etc/nginx/sites-available/{shlex.quote(name)} /etc/nginx/sites-enabled/{shlex.quote(name)}"
-        elif server == "apache2":
-            cmd = f"a2dissite {shlex.quote(name)}" if currently_enabled else f"a2ensite {shlex.quote(name)}"
+        elif server in ("apache2", "httpd"):
+            if mode == "a2enmod":
+                cmd = f"a2dissite {shlex.quote(name)}" if currently_enabled else f"a2ensite {shlex.quote(name)}"
+            else:
+                if currently_enabled:
+                    cmd = f"mv {shlex.quote(path)} {shlex.quote(path)}.disabled"
+                else:
+                    target_enabled = path.removesuffix(".disabled")
+                    cmd = f"mv {shlex.quote(path)} {shlex.quote(target_enabled)}"
         else:
             return
 
@@ -529,12 +624,20 @@ class VHostManagerWidget(QWidget):
         if selected:
             server = selected[0].data(Qt.ItemDataRole.UserRole).get("server", "nginx")
 
-        cmd = "nginx -t" if server == "nginx" else "apachectl configtest 2>&1 || httpd -t 2>&1"
+        if server == "nginx":
+            cmd = "nginx -t 2>&1"
+        elif server in ("apache2", "httpd"):
+            cmd = "apachectl configtest 2>&1 || apache2ctl configtest 2>&1 || httpd -t 2>&1"
+        elif server == "caddy":
+            cmd = "caddy validate --config /etc/caddy/Caddyfile 2>&1"
+        else:
+            cmd = "nginx -t 2>&1"
+
         self.status_message.emit(f"Running syntax check for {server}...")
 
         def on_done(out: str, rc: int):
-            is_ok = rc == 0 and ("syntax is ok" in out.lower() or "syntax ok" in out.lower())
-            if is_ok:
+            is_ok = rc == 0 and any(kw in out.lower() for kw in ("syntax is ok", "syntax ok", "valid", "successful"))
+            if is_ok or rc == 0:
                 QMessageBox.information(self, "Syntax Test Passed", f"✅ Configuration syntax is valid:\n\n{out.strip()}")
             else:
                 QMessageBox.critical(self, "Syntax Test Failed", f"❌ Configuration syntax error detected:\n\n{out.strip()}")
@@ -547,8 +650,15 @@ class VHostManagerWidget(QWidget):
         if selected:
             server = selected[0].data(Qt.ItemDataRole.UserRole).get("server", "nginx")
 
-        # First run safe syntax check, then reload if syntax passes
-        check_cmd = "nginx -t" if server == "nginx" else "apachectl configtest"
+        if server == "nginx":
+            check_cmd = "nginx -t 2>&1"
+        elif server in ("apache2", "httpd"):
+            check_cmd = "apachectl configtest 2>&1 || apache2ctl configtest 2>&1 || httpd -t 2>&1"
+        elif server == "caddy":
+            check_cmd = "caddy validate --config /etc/caddy/Caddyfile 2>&1"
+        else:
+            check_cmd = "nginx -t 2>&1"
+
         reload_cmd = f"systemctl reload {server}"
 
         self.status_message.emit(f"Verifying syntax before reloading {server}...")
@@ -572,6 +682,18 @@ class VHostManagerWidget(QWidget):
 
         self.exec_fn(check_cmd, after_check)
 
+    def _export_sites_list(self) -> None:
+        """Export virtual hosts inventory to CSV or JSON."""
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        pos = self.sender().mapToGlobal(self.sender().rect().bottomLeft()) if self.sender() else self.mapToGlobal(self.pos())
+        action = menu.exec(pos)
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "vhosts_inventory.csv", "Export Virtual Hosts to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "vhosts_inventory.json", "Export Virtual Hosts to JSON")
+
     def _create_new_vhost(self) -> None:
         dlg = NewVHostDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -581,25 +703,45 @@ class VHostManagerWidget(QWidget):
         server = res["server"]
         content = res["config"]
 
-        target_path = f"/etc/{server}/sites-available/{domain}.conf"
+        # Safe fallback: create in sites-available if dir exists, else conf.d
+        if server == "nginx":
+            target_path = f"/etc/nginx/sites-available/{domain}.conf"
+        else:
+            target_path = f"/etc/apache2/sites-available/{domain}.conf"
 
         import base64
         b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        cmd = f"echo {b64} | base64 -d > {shlex.quote(target_path)}"
+        # Script checks directory existence and places config appropriately for Debian or RHEL
+        cmd = (
+            f"if [ -d /etc/nginx/sites-available ] && [ '{server}' = 'nginx' ]; then "
+            f"  echo {b64} | base64 -d > /etc/nginx/sites-available/{shlex.quote(domain)}.conf && echo '/etc/nginx/sites-available/{domain}.conf'; "
+            f"elif [ -d /etc/nginx/conf.d ] && [ '{server}' = 'nginx' ]; then "
+            f"  echo {b64} | base64 -d > /etc/nginx/conf.d/{shlex.quote(domain)}.conf && echo '/etc/nginx/conf.d/{domain}.conf'; "
+            f"elif [ -d /etc/apache2/sites-available ]; then "
+            f"  echo {b64} | base64 -d > /etc/apache2/sites-available/{shlex.quote(domain)}.conf && echo '/etc/apache2/sites-available/{domain}.conf'; "
+            f"elif [ -d /etc/httpd/conf.d ]; then "
+            f"  echo {b64} | base64 -d > /etc/httpd/conf.d/{shlex.quote(domain)}.conf && echo '/etc/httpd/conf.d/{domain}.conf'; "
+            f"else "
+            f"  echo {b64} | base64 -d > {shlex.quote(target_path)} && echo '{target_path}'; "
+            f"fi"
+        )
 
         def on_created(out: str, rc: int):
+            actual_path = out.strip().splitlines()[-1] if out.strip() else target_path
             if rc == 0:
-                self.services.notifications.push("ok", "Virtual Host Created", target_path)
-                # Ask user if they wish to enable immediately
-                if QMessageBox.question(
-                    self, "Enable Site",
-                    f"Virtual Host created at {target_path}.\nDo you want to enable it now?"
-                ) == QMessageBox.StandardButton.Yes:
-                    if server == "nginx":
-                        en_cmd = f"ln -sf {shlex.quote(target_path)} /etc/nginx/sites-enabled/{shlex.quote(domain)}.conf"
+                self.services.notifications.push("ok", "Virtual Host Created", actual_path)
+                if "/sites-available/" in actual_path:
+                    if QMessageBox.question(
+                        self, "Enable Site",
+                        f"Virtual Host created at {actual_path}.\nDo you want to enable it now?"
+                    ) == QMessageBox.StandardButton.Yes:
+                        if server == "nginx":
+                            en_cmd = f"ln -sf {shlex.quote(actual_path)} /etc/nginx/sites-enabled/{shlex.quote(domain)}.conf"
+                        else:
+                            en_cmd = f"a2ensite {shlex.quote(domain)}.conf"
+                        self.exec_fn(en_cmd, lambda *_: self.refresh())
                     else:
-                        en_cmd = f"a2ensite {shlex.quote(domain)}.conf"
-                    self.exec_fn(en_cmd, lambda *_: self.refresh())
+                        self.refresh()
                 else:
                     self.refresh()
             else:

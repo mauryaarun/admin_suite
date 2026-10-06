@@ -74,6 +74,11 @@ class PortExposureWidget(QWidget):
         self.btn_refresh.clicked.connect(self.refresh)
         top_bar.addWidget(self.btn_refresh)
 
+        self.btn_export = QPushButton("📤 Export Sockets")
+        self.btn_export.setToolTip("Export exposed sockets table to CSV or JSON")
+        self.btn_export.clicked.connect(self._on_export)
+        top_bar.addWidget(self.btn_export)
+
         layout.addLayout(top_bar)
 
         # KPI Metrics Cards
@@ -275,3 +280,17 @@ class PortExposureWidget(QWidget):
                     comment=f"Blocked exposed port {port}",
                 )
                 self.run_cmd(cmd, lambda out, err, code: self.refresh())
+
+    def _on_export(self):
+        from admin_suite.core.export import ReportExporter
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QCursor
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        action = menu.exec(QCursor.pos())
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "exposed_sockets_audit.csv", "Export Exposed Sockets to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "exposed_sockets_audit.json", "Export Exposed Sockets to JSON")
+

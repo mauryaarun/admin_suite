@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -30,6 +31,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.export import ReportExporter
 
 
 class RuntimesManagerWidget(QWidget):
@@ -63,6 +66,11 @@ class RuntimesManagerWidget(QWidget):
         self.php_reload_btn = QPushButton("🔄 Reload PHP-FPM")
         self.php_reload_btn.clicked.connect(self._reload_php)
         php_bar.addWidget(self.php_reload_btn)
+
+        php_export_btn = QPushButton("📤 Export Pools")
+        php_export_btn.setToolTip("Export PHP-FPM pools list to CSV or JSON")
+        php_export_btn.clicked.connect(self._export_php_pools)
+        php_bar.addWidget(php_export_btn)
 
         php_refresh_btn = QPushButton("🔄 Refresh Pools")
         php_refresh_btn.clicked.connect(self._refresh_php)
@@ -107,6 +115,11 @@ class RuntimesManagerWidget(QWidget):
         self.pm2_logs_btn.clicked.connect(self._view_pm2_logs)
         node_bar.addWidget(self.pm2_logs_btn)
 
+        node_export_btn = QPushButton("📤 Export PM2")
+        node_export_btn.setToolTip("Export PM2 process table to CSV or JSON")
+        node_export_btn.clicked.connect(self._export_node_apps)
+        node_bar.addWidget(node_export_btn)
+
         pm2_refresh_btn = QPushButton("🔄 Refresh PM2")
         pm2_refresh_btn.clicked.connect(self._refresh_pm2)
         node_bar.addWidget(pm2_refresh_btn)
@@ -132,6 +145,7 @@ class RuntimesManagerWidget(QWidget):
         self.log_viewer.setMaximumHeight(130)
         self.log_viewer.setFont(QFont("JetBrains Mono, Consolas", 9))
         self.log_viewer.setPlaceholderText("Runtime command and process logs...")
+        ReportExporter.attach_export_context_menu(self.log_viewer)
         layout.addWidget(self.log_viewer)
 
     def refresh(self) -> None:
@@ -278,3 +292,28 @@ class RuntimesManagerWidget(QWidget):
             self.log_viewer.setPlainText(out or f"No logs recorded for {app_name}")
 
         self.exec_fn(cmd, on_done)
+
+    def _export_php_pools(self) -> None:
+        """Export PHP pools table to CSV or JSON."""
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        pos = self.sender().mapToGlobal(self.sender().rect().bottomLeft()) if self.sender() else self.mapToGlobal(self.pos())
+        action = menu.exec(pos)
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.php_table, "php_pools_report.csv", "Export PHP-FPM Pools to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.php_table, "php_pools_report.json", "Export PHP-FPM Pools to JSON")
+
+    def _export_node_apps(self) -> None:
+        """Export PM2 applications table to CSV or JSON."""
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        pos = self.sender().mapToGlobal(self.sender().rect().bottomLeft()) if self.sender() else self.mapToGlobal(self.pos())
+        action = menu.exec(pos)
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.node_table, "pm2_applications.csv", "Export PM2 Applications to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.node_table, "pm2_applications.json", "Export PM2 Applications to JSON")
+

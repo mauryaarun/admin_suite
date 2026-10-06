@@ -203,6 +203,11 @@ class FirewallManagerWidget(QWidget):
         self.btn_reload.clicked.connect(self._on_reload)
         top_bar.addWidget(self.btn_reload)
 
+        self.btn_export = QPushButton("📤 Export Rules")
+        self.btn_export.setToolTip("Export rules table to CSV or JSON")
+        self.btn_export.clicked.connect(self._on_export)
+        top_bar.addWidget(self.btn_export)
+
         layout.addLayout(top_bar)
 
         # Rules Table
@@ -358,3 +363,17 @@ class FirewallManagerWidget(QWidget):
 
     def _after_mutation(self, stdout: str, stderr: str, code: int):
         self.refresh()
+
+    def _on_export(self):
+        from admin_suite.core.export import ReportExporter
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QCursor
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        action = menu.exec(QCursor.pos())
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "firewall_rules.csv", "Export Firewall Rules to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "firewall_rules.json", "Export Firewall Rules to JSON")
+

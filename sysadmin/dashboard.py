@@ -5,7 +5,7 @@ import subprocess
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QColor, QCursor, QFont, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.export import ReportExporter
 from admin_suite.ssh.remote_exec import RemoteExecThread
 from admin_suite.sysadmin.commands import SYSADMIN_CMDS, SYSADMIN_SECTIONS
 
@@ -129,6 +130,11 @@ class SysAdminTab(QWidget):
                 proxy.setSourceModel(model)
                 table.setModel(proxy)
 
+                table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                table.customContextMenuRequested.connect(
+                    lambda pos, t=table, s=section: self._show_table_menu(t, s, pos)
+                )
+
                 self.table_views[section] = table
                 self.stack.addWidget(table)
             else:
@@ -136,13 +142,7 @@ class SysAdminTab(QWidget):
                 text.setReadOnly(True)
                 text.setFont(QFont("JetBrains Mono, Consolas", 11))
                 text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-
-                text.setContextMenuPolicy(
-                    Qt.ContextMenuPolicy.CustomContextMenu
-                )
-                text.customContextMenuRequested.connect(
-                    lambda pos, t=text: self._show_text_menu(t, pos)
-                )
+                ReportExporter.attach_export_context_menu(text)
 
                 self.text_views[section] = text
                 self.stack.addWidget(text)
@@ -163,15 +163,51 @@ class SysAdminTab(QWidget):
         """Return True when a profile is available (not None)."""
         return self.profile is not None
 
-    def _show_text_menu(self, text_edit: QPlainTextEdit, pos) -> None:
+    def _show_table_menu(self, table: QTableView, section: str, pos) -> None:
         menu = QMenu(self)
-        copy_action = menu.addAction("Copy Selection")
-        copy_all_action = menu.addAction("Copy All")
-        action = menu.exec(text_edit.mapToGlobal(pos))
-        if action == copy_action:
-            text_edit.copy()
-        elif action == copy_all_action:
-            QApplication.clipboard().setText(text_edit.toPlainText())
+        copy_act = menu.addAction("📋 Copy Selected Cell")
+        menu.addSeparator()
+        csv_act = menu.addAction("📊 Export Table to CSV...")
+        json_act = menu.addAction("📄 Export Table to JSON...")
+        action = menu.exec(table.mapToGlobal(pos))
+        if action == copy_act:
+            idx = table.currentIndex()
+            if idx.isValid():
+                QApplication.clipboard().setText(str(table.model().data(idx)))
+        elif action == csv_act:
+            ReportExporter.export_table_csv(self, table, f"{section.lower()}_report.csv", f"Export {section} to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, table, f"{section.lower()}_report.json", f"Export {section} to JSON")
+
+    def _export_current_section(self, name: str) -> None:
+        menu = QMenu(self)
+        if name in ("Users", "Services", "Processes"):
+            csv_act = menu.addAction("📊 Export as CSV File")
+            json_act = menu.addAction("📄 Export as JSON File")
+            action = menu.exec(QCursor.pos())
+            table = self.table_views.get(name)
+            if not table:
+                return
+            if action == csv_act:
+                ReportExporter.export_table_csv(self, table, f"{name.lower()}_report.csv", f"Export {name} to CSV")
+            elif action == json_act:
+                ReportExporter.export_table_json(self, table, f"{name.lower()}_report.json", f"Export {name} to JSON")
+        else:
+            txt_act = menu.addAction("📄 Export as Text File (.txt)")
+            md_act = menu.addAction("📝 Export as Markdown (.md)")
+            sel_act = menu.addAction("💾 Export Selected Excerpt")
+            action = menu.exec(QCursor.pos())
+            text_edit = self.text_views.get(name)
+            if not text_edit:
+                return
+            if action == txt_act:
+                ReportExporter.export_text_file(self, text_edit.toPlainText(), f"{name.lower()}_report.txt", f"Export {name} Report")
+            elif action == md_act:
+                content = f"# {name} Report — {self.profile_name}\n\n```\n{text_edit.toPlainText()}\n```\n"
+                ReportExporter.export_text_file(self, content, f"{name.lower()}_report.md", f"Export {name} Markdown", "Markdown (*.md);;All Files (*)")
+            elif action == sel_act:
+                selected = text_edit.textCursor().selectedText().replace("\u2029", "\n")
+                ReportExporter.export_excerpt_dialog(self, selected, f"{name.lower()}_excerpt.txt")
 
     def _set_loading(self, loading: bool) -> None:
         self.nav.setEnabled(not loading)
@@ -216,7 +252,13 @@ class SysAdminTab(QWidget):
                     lambda checked, o=op: self.service_op(o)
                 )
                 self.action_bar.addWidget(button)
-            self.action_bar.addStretch()
+
+        self.action_bar.addStretch()
+
+        export_btn = QPushButton("📤 Export Section")
+        export_btn.setToolTip("Export current report/table to CSV, JSON, or Text file")
+        export_btn.clicked.connect(lambda _, n=name: self._export_current_section(n))
+        self.action_bar.addWidget(export_btn)
 
         cmd = SYSADMIN_CMDS[name]
 

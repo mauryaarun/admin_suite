@@ -117,6 +117,11 @@ class Fail2banManagerWidget(QWidget):
         self.btn_reload.clicked.connect(self._on_reload)
         top_bar.addWidget(self.btn_reload)
 
+        self.btn_export = QPushButton("📤 Export Banned IPs")
+        self.btn_export.setToolTip("Export banned IPs table to CSV or JSON")
+        self.btn_export.clicked.connect(self._on_export)
+        top_bar.addWidget(self.btn_export)
+
         self.btn_refresh = QPushButton("🔄 Refresh")
         self.btn_refresh.clicked.connect(self.refresh)
         top_bar.addWidget(self.btn_refresh)
@@ -300,3 +305,17 @@ class Fail2banManagerWidget(QWidget):
 
     def _on_reload(self):
         self.run_cmd(SecurityCommands.fail2ban_reload(), lambda out, err, code: self.refresh())
+
+    def _on_export(self):
+        from admin_suite.core.export import ReportExporter
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QCursor
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        action = menu.exec(QCursor.pos())
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "fail2ban_banned_ips.csv", "Export Banned IPs to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "fail2ban_banned_ips.json", "Export Banned IPs to JSON")
+

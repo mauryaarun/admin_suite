@@ -125,6 +125,11 @@ class HardeningAuditorWidget(QWidget):
         self.btn_run_lynis.clicked.connect(self._on_run_lynis)
         header_layout.addWidget(self.btn_run_lynis)
 
+        self.btn_export = QPushButton("📤 Export Audit")
+        self.btn_export.setToolTip("Export hardening audit checklist to CSV or JSON")
+        self.btn_export.clicked.connect(self._on_export)
+        header_layout.addWidget(self.btn_export)
+
         self.btn_refresh = QPushButton("🔄 Run Audit")
         self.btn_refresh.clicked.connect(self.refresh)
         header_layout.addWidget(self.btn_refresh)
@@ -341,6 +346,8 @@ class HardeningAuditorWidget(QWidget):
         edit.setFont(QFont("Monospace", 9))
         edit.setReadOnly(True)
         edit.setPlainText(stdout or stderr or "No output returned.")
+        from admin_suite.core.export import ReportExporter
+        ReportExporter.attach_export_context_menu(edit)
         vbox.addWidget(edit)
 
         btn = QPushButton("Close")
@@ -348,3 +355,17 @@ class HardeningAuditorWidget(QWidget):
         vbox.addWidget(btn)
 
         dlg.exec()
+
+    def _on_export(self):
+        from admin_suite.core.export import ReportExporter
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QCursor
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        action = menu.exec(QCursor.pos())
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "security_hardening_audit.csv", "Export Hardening Audit to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "security_hardening_audit.json", "Export Hardening Audit to JSON")
+

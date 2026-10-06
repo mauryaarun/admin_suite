@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -31,6 +32,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.export import ReportExporter
 
 
 class CertbotRequestDialog(QDialog):
@@ -166,6 +169,11 @@ class SSLManagerWidget(QWidget):
         renew_btn.clicked.connect(self._renew_selected)
         toolbar.addWidget(renew_btn)
 
+        export_btn = QPushButton("📤 Export SSL Report")
+        export_btn.setToolTip("Export certificate inventory to CSV or JSON")
+        export_btn.clicked.connect(self._export_ssl_report)
+        toolbar.addWidget(export_btn)
+
         refresh_btn = QPushButton("🔄 Refresh")
         refresh_btn.clicked.connect(self.refresh)
         toolbar.addWidget(refresh_btn)
@@ -187,6 +195,7 @@ class SSLManagerWidget(QWidget):
         self.log_output.setMaximumHeight(140)
         self.log_output.setFont(QFont("JetBrains Mono, Consolas", 9))
         self.log_output.setPlaceholderText("Execution log & renewal output...")
+        ReportExporter.attach_export_context_menu(self.log_output)
         layout.addWidget(self.log_output)
 
     def refresh(self) -> None:
@@ -206,8 +215,8 @@ class SSLManagerWidget(QWidget):
 
         for line in out.splitlines():
             line = line.strip()
-            if line == "=== RAW_CERT_DATES ===":
-                raw_dates_active = True
+            if line.startswith("=== ") and line.endswith(" ==="):
+                raw_dates_active = line in ("=== RAW_CERT_DATES ===", "=== RHEL_CUSTOM_CERTS ===")
                 continue
             if not raw_dates_active:
                 continue
@@ -324,3 +333,16 @@ class SSLManagerWidget(QWidget):
                 self.services.notifications.push("error", "Renewal Failed", out[:150])
 
         self.exec_fn(cmd, on_done)
+
+    def _export_ssl_report(self) -> None:
+        """Export SSL certificate report to CSV or JSON."""
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        pos = self.sender().mapToGlobal(self.sender().rect().bottomLeft()) if self.sender() else self.mapToGlobal(self.pos())
+        action = menu.exec(pos)
+        if action == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "ssl_certificates_report.csv", "Export SSL Certificates to CSV")
+        elif action == json_act:
+            ReportExporter.export_table_json(self, self.table, "ssl_certificates_report.json", "Export SSL Certificates to JSON")
+
