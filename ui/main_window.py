@@ -508,7 +508,7 @@ class MainWindow(QMainWindow):
         navbar_layout.setContentsMargins(8, 4, 8, 4)
         navbar_layout.setSpacing(6)
 
-        self.sidebar_toggle_btn = QPushButton("🗂️ Sidebar ◀")
+        self.sidebar_toggle_btn = QPushButton("◀")
         self.sidebar_toggle_btn.setToolTip("Toggle Left Sidebar (Ctrl+B)")
         self.sidebar_toggle_btn.clicked.connect(lambda: self.toggle_sidebar())
 
@@ -528,7 +528,7 @@ class MainWindow(QMainWindow):
         self.vpn_btn.clicked.connect(self.vpn.toggle)
 
         # Single right sidebar toggle button
-        self.right_sidebar_toggle_btn = QPushButton("🗂️ Right Sidebar ▶")
+        self.right_sidebar_toggle_btn = QPushButton("▶")
         self.right_sidebar_toggle_btn.setToolTip("Toggle Right Sidebar (Copilot & Event Logs) (Ctrl+Shift+A)")
         self.right_sidebar_toggle_btn.clicked.connect(lambda: self.toggle_right_sidebar())
 
@@ -2663,12 +2663,12 @@ class MainWindow(QMainWindow):
         theme = self.services.theme.current
         if hasattr(self, "sidebar_toggle_btn"):
             if is_open:
-                self.sidebar_toggle_btn.setText("🗂️ Sidebar ◀")
+                self.sidebar_toggle_btn.setText("◀")
                 self.sidebar_toggle_btn.setStyleSheet(
                     f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
                 )
             else:
-                self.sidebar_toggle_btn.setText("🗂️ Sidebar ▶")
+                self.sidebar_toggle_btn.setText("▶")
                 self.sidebar_toggle_btn.setStyleSheet(
                     f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
                 )
@@ -2828,12 +2828,12 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "right_sidebar_toggle_btn"):
             if is_visible:
-                self.right_sidebar_toggle_btn.setText("🗂️ Right Sidebar ▶")
+                self.right_sidebar_toggle_btn.setText("▶")
                 self.right_sidebar_toggle_btn.setStyleSheet(
                     f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
                 )
             else:
-                self.right_sidebar_toggle_btn.setText("🗂️ Right Sidebar ◀")
+                self.right_sidebar_toggle_btn.setText("◀")
                 self.right_sidebar_toggle_btn.setStyleSheet(
                     f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
                 )
