@@ -83,6 +83,183 @@ class SecurityCommands:
     def ufw_delete_rule_num(rule_num: int) -> str:
         return f"ufw --force delete {int(rule_num)}"
 
+    # ---------------- Firewalld Commands (RHEL / CentOS / Alma / Rocky / Fedora) ----------------
+    @staticmethod
+    def firewalld_status(zone: str = "") -> str:
+        if zone:
+            clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone)
+            return f"firewall-cmd --state && echo '=== ACTIVE_ZONES ===' && firewall-cmd --get-active-zones && echo '=== ZONE_DETAILS ===' && firewall-cmd --zone={clean_zone} --list-all"
+        return "firewall-cmd --state && echo '=== ACTIVE_ZONES ===' && firewall-cmd --get-active-zones && echo '=== ZONE_DETAILS ===' && firewall-cmd --list-all"
+
+    @staticmethod
+    def firewalld_enable() -> str:
+        return "systemctl unmask firewalld 2>/dev/null; systemctl enable --now firewalld"
+
+    @staticmethod
+    def firewalld_disable() -> str:
+        return "systemctl stop firewalld && systemctl disable firewalld"
+
+    @staticmethod
+    def firewalld_reload() -> str:
+        return "firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_add_port(
+        port: str,
+        proto: str = "tcp",
+        zone: str = "public",
+        permanent: bool = True,
+    ) -> str:
+        clean_port = re.sub(r'[^0-9\-:]', '', port.strip())
+        clean_proto = proto.strip().lower()
+        if clean_proto not in ("tcp", "udp", "sctp", "dccp"):
+            clean_proto = "tcp"
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        perm_flag = "--permanent " if permanent else ""
+        return f"firewall-cmd --zone={clean_zone} {perm_flag}--add-port={clean_port}/{clean_proto} && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_remove_port(
+        port: str,
+        proto: str = "tcp",
+        zone: str = "public",
+        permanent: bool = True,
+    ) -> str:
+        clean_port = re.sub(r'[^0-9\-:]', '', port.strip())
+        clean_proto = proto.strip().lower()
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        perm_flag = "--permanent " if permanent else ""
+        return f"firewall-cmd --zone={clean_zone} {perm_flag}--remove-port={clean_port}/{clean_proto} && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_add_service(
+        service: str,
+        zone: str = "public",
+        permanent: bool = True,
+    ) -> str:
+        clean_srv = re.sub(r'[^a-zA-Z0-9_\-]', '', service.strip().lower())
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        perm_flag = "--permanent " if permanent else ""
+        return f"firewall-cmd --zone={clean_zone} {perm_flag}--add-service={clean_srv} && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_remove_service(
+        service: str,
+        zone: str = "public",
+        permanent: bool = True,
+    ) -> str:
+        clean_srv = re.sub(r'[^a-zA-Z0-9_\-]', '', service.strip().lower())
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        perm_flag = "--permanent " if permanent else ""
+        return f"firewall-cmd --zone={clean_zone} {perm_flag}--remove-service={clean_srv} && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_deny_port(
+        port: str,
+        proto: str = "tcp",
+        zone: str = "public",
+    ) -> str:
+        """Deny incoming traffic on a port using a rich rule."""
+        clean_port = re.sub(r'[^0-9\-:]', '', port.strip())
+        clean_proto = proto.strip().lower()
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        rich = f'rule port port="{clean_port}" protocol="{clean_proto}" reject'
+        return f"firewall-cmd --zone={clean_zone} --permanent --add-rich-rule='{rich}' && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_add_rich_rule(rule: str, zone: str = "public", permanent: bool = True) -> str:
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        perm_flag = "--permanent " if permanent else ""
+        return f"firewall-cmd --zone={clean_zone} {perm_flag}--add-rich-rule={shlex.quote(rule)} && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_remove_rich_rule(rule: str, zone: str = "public", permanent: bool = True) -> str:
+        clean_zone = re.sub(r'[^a-zA-Z0-9_\-]', '', zone.strip()) or "public"
+        perm_flag = "--permanent " if permanent else ""
+        return f"firewall-cmd --zone={clean_zone} {perm_flag}--remove-rich-rule={shlex.quote(rule)} && firewall-cmd --reload"
+
+    @staticmethod
+    def firewalld_get_zones() -> str:
+        return "firewall-cmd --get-zones"
+
+    # ---------------- iptables Legacy Commands ----------------
+    @staticmethod
+    def iptables_status() -> str:
+        return "iptables -L -n -v --line-numbers 2>/dev/null || ip6tables -L -n -v --line-numbers 2>/dev/null"
+
+    @staticmethod
+    def iptables_drop_port(port: int, proto: str = "tcp") -> str:
+        return f"iptables -I INPUT -p {shlex.quote(proto)} --dport {int(port)} -j DROP"
+
+    # ---------------- Active Connections & Remote Traffic ----------------
+    @staticmethod
+    def list_active_connections() -> str:
+        return (
+            "echo '=== ESTABLISHED_CONNECTIONS ==='; "
+            "if which ss >/dev/null 2>&1; then "
+            "  ss -ntu state established; "
+            "else "
+            "  netstat -ntu 2>/dev/null | grep ESTABLISHED; "
+            "fi; "
+            "echo '=== TOP_REMOTE_IPS ==='; "
+            "if which ss >/dev/null 2>&1; then "
+            "  ss -ntu state established 2>/dev/null | awk '{print $5}' | cut -d: -f1 | grep -v 'Local' | grep -v 'Address' | grep -v '^$' | sort | uniq -c | sort -nr | head -25; "
+            "else "
+            "  netstat -ntu 2>/dev/null | grep ESTABLISHED | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -nr | head -25; "
+            "fi"
+        )
+
+    # ---------------- Malware, Rootkit & File Integrity Tools ----------------
+    @staticmethod
+    def malware_tools_probe() -> str:
+        return (
+            "echo '=== SCANNER_PROBE ==='; "
+            "which clamscan >/dev/null 2>&1 && echo 'CLAMAV:yes' || echo 'CLAMAV:no'; "
+            "which rkhunter >/dev/null 2>&1 && echo 'RKHUNTER:yes' || echo 'RKHUNTER:no'; "
+            "which chkrootkit >/dev/null 2>&1 && echo 'CHKROOTKIT:yes' || echo 'CHKROOTKIT:no'; "
+            "which freshclam >/dev/null 2>&1 && echo 'FRESHCLAM:yes' || echo 'FRESHCLAM:no'"
+        )
+
+    @staticmethod
+    def scan_suid_sgid_files() -> str:
+        """Find dangerous SUID/SGID binaries on root filesystem."""
+        return (
+            "find / -xdev \\( -perm -4000 -o -perm -2000 \\) -type f -exec ls -la {} + 2>/dev/null | head -60"
+        )
+
+    @staticmethod
+    def scan_world_writable_dirs() -> str:
+        """Find world-writable directories that could be exploited for privilege escalation."""
+        return (
+            "find /etc /var/www /opt /usr/local -maxdepth 3 -type d -perm -0002 2>/dev/null | head -40"
+        )
+
+    @staticmethod
+    def run_clamscan_quick(target_dir: str = "/var/www") -> str:
+        clean_dir = shlex.quote(target_dir.strip() or "/var/www")
+        return f"clamscan -r --bell -i --max-filesize=25M --max-scansize=100M {clean_dir} 2>&1"
+
+    @staticmethod
+    def run_rkhunter_quick() -> str:
+        return "rkhunter --check --sk --rwo 2>&1 || true"
+
+    # ---------------- SSL/TLS Certificate Auditor ----------------
+    @staticmethod
+    def audit_all_ssl_certs() -> str:
+        return (
+            "echo '=== SSL_CERTS_AUDIT ==='; "
+            "for cert in /etc/letsencrypt/live/*/cert.pem /etc/pki/tls/certs/*.crt /etc/ssl/certs/*.pem /etc/nginx/ssl/*.crt; do "
+            "  if [ -f \"$cert\" ]; then "
+            "    subj=$(openssl x509 -in \"$cert\" -noout -subject 2>/dev/null | sed 's/subject= //'); "
+            "    issuer=$(openssl x509 -in \"$cert\" -noout -issuer 2>/dev/null | sed 's/issuer= //'); "
+            "    enddate=$(openssl x509 -in \"$cert\" -noout -enddate 2>/dev/null | cut -d= -f2); "
+            "    keysize=$(openssl x509 -in \"$cert\" -noout -text 2>/dev/null | grep -E 'Public Key:|RSA Public-Key:' | head -1 | tr -d ' '); "
+            "    datesec=$(date -d \"$enddate\" +%s 2>/dev/null || echo '0'); "
+            "    echo \"$cert|$subj|$issuer|$enddate|$keysize|$datesec\"; "
+            "  fi; "
+            "done"
+        )
+
     # ---------------- Fail2ban Commands ----------------
     @staticmethod
     def fail2ban_status() -> str:
@@ -681,3 +858,247 @@ class SecurityParsers:
                     res["sudo_users"] = [u for u in users_str.split() if u]
 
         return res
+
+    # ---------------- Firewalld Parser ----------------
+    @classmethod
+    def parse_firewalld_status(cls, raw: str) -> Dict[str, Any]:
+        """
+        Parses `firewall-cmd` output into structured firewall records.
+        """
+        result: Dict[str, Any] = {
+            "active": False,
+            "raw_state": "inactive",
+            "active_zones": [],
+            "zone": "public",
+            "services": [],
+            "ports": [],
+            "rich_rules": [],
+            "interfaces": [],
+            "rules": [],
+        }
+
+        if not raw:
+            return result
+
+        lines = [line.rstrip() for line in raw.splitlines()]
+
+        has_zone_marker = "=== ZONE_DETAILS ===" in raw
+        section = "header"
+        curr_zone = "public"
+
+        for line in lines:
+            line_s = line.strip()
+            if not line_s:
+                continue
+
+            if line_s == "running":
+                result["active"] = True
+                result["raw_state"] = "running"
+            elif line_s == "not running":
+                result["active"] = False
+                result["raw_state"] = "not running"
+            elif line_s == "=== ACTIVE_ZONES ===":
+                section = "active_zones"
+                continue
+            elif line_s == "=== ZONE_DETAILS ===":
+                section = "zone_details"
+                continue
+
+            if section == "active_zones":
+                if not line.startswith(" ") and not line.startswith("\t"):
+                    result["active_zones"].append(line_s)
+            elif section == "zone_details" or not has_zone_marker:
+                if "(" in line_s and "active)" in line_s:
+                    curr_zone = line_s.split()[0]
+                    result["zone"] = curr_zone
+                    result["active"] = True
+                    result["raw_state"] = "running"
+                elif line_s.endswith(":") and not any(line_s.startswith(k) for k in ("services:", "ports:", "interfaces:", "rich rules:")):
+                    curr_zone = line_s[:-1]
+                    result["zone"] = curr_zone
+
+                if line_s.startswith("interfaces:"):
+                    parts = line_s.split(":", 1)[1].strip()
+                    if parts:
+                        result["interfaces"] = parts.split()
+                elif line_s.startswith("services:"):
+                    parts = line_s.split(":", 1)[1].strip()
+                    if parts:
+                        result["services"] = parts.split()
+                elif line_s.startswith("ports:"):
+                    parts = line_s.split(":", 1)[1].strip()
+                    if parts:
+                        result["ports"] = parts.split()
+                elif line_s.startswith("rich rules:"):
+                    pass
+                elif "rule " in line_s or line_s.startswith("rule"):
+                    result["rich_rules"].append(line_s)
+
+        # Build unified rules table records
+        unified_rules: List[Dict[str, Any]] = []
+        rule_idx = 1
+
+        for srv in result["services"]:
+            unified_rules.append({
+                "num": rule_idx,
+                "type": "service",
+                "to": f"{srv} (service)",
+                "action": "ALLOW IN",
+                "from": "Anywhere",
+                "comment": f"Zone: {result['zone']}",
+                "ipv6": False,
+                "raw_target": srv,
+            })
+            rule_idx += 1
+
+        for p in result["ports"]:
+            unified_rules.append({
+                "num": rule_idx,
+                "type": "port",
+                "to": p,
+                "action": "ALLOW IN",
+                "from": "Anywhere",
+                "comment": f"Zone: {result['zone']}",
+                "ipv6": False,
+                "raw_target": p,
+            })
+            rule_idx += 1
+
+        for r in result["rich_rules"]:
+            act = "ALLOW IN" if "accept" in r else ("DENY IN" if "reject" in r or "drop" in r else "RICH")
+            unified_rules.append({
+                "num": rule_idx,
+                "type": "rich",
+                "to": r,
+                "action": act,
+                "from": "Specific Rule",
+                "comment": f"Rich Rule ({result['zone']})",
+                "ipv6": "ipv6" in r,
+                "raw_target": r,
+            })
+            rule_idx += 1
+
+        result["rules"] = unified_rules
+        return result
+
+    # ---------------- Active Connections Parser ----------------
+    @classmethod
+    def parse_active_connections(cls, raw: str) -> Dict[str, Any]:
+        """Parses active established sockets and top remote IPs."""
+        sockets = []
+        top_ips = []
+        section = "sockets"
+
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s == "=== ESTABLISHED_CONNECTIONS ===":
+                section = "sockets"
+                continue
+            elif line_s == "=== TOP_REMOTE_IPS ===":
+                section = "top_ips"
+                continue
+
+            if section == "sockets":
+                if not line_s or line_s.startswith("Netid") or line_s.startswith("Active"):
+                    continue
+                parts = line_s.split()
+                if len(parts) >= 5:
+                    sockets.append({
+                        "proto": parts[0],
+                        "state": parts[1] if len(parts) > 2 else "ESTAB",
+                        "local": parts[3] if len(parts) > 3 else "-",
+                        "remote": parts[4] if len(parts) > 4 else "-",
+                        "process": " ".join(parts[5:]) if len(parts) > 5 else "-",
+                    })
+            elif section == "top_ips":
+                if line_s and not line_s.startswith("=="):
+                    parts = line_s.split(None, 1)
+                    if len(parts) == 2:
+                        try:
+                            count = int(parts[0])
+                            ip = parts[1].strip()
+                            top_ips.append({"count": count, "ip": ip})
+                        except ValueError:
+                            pass
+
+        return {"connections": sockets, "top_ips": top_ips}
+
+    # ---------------- SUID Files Parser ----------------
+    @classmethod
+    def parse_suid_files(cls, raw: str) -> List[Dict[str, Any]]:
+        """Parses SUID/SGID audit output."""
+        items = []
+        KNOWN_HIGH_RISK = {"bash", "sh", "python", "perl", "ruby", "vim", "nano", "nmap", "find", "cp", "mv", "chmod", "chown"}
+
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if not line_s or line_s.startswith("find:"):
+                continue
+            parts = line_s.split()
+            if len(parts) >= 9:
+                perms = parts[0]
+                owner = parts[2]
+                group = parts[3]
+                size = parts[4]
+                path = parts[8]
+                basename = path.rsplit("/", 1)[-1]
+                risk = "high" if basename in KNOWN_HIGH_RISK else "info"
+                items.append({
+                    "perms": perms,
+                    "owner": owner,
+                    "group": group,
+                    "size": size,
+                    "path": path,
+                    "name": basename,
+                    "risk": risk,
+                })
+        return items
+
+    # ---------------- SSL Certificates Parser ----------------
+    @classmethod
+    def parse_ssl_certificates(cls, raw: str) -> List[Dict[str, Any]]:
+        """Parses SSL certificate probe output."""
+        import time
+        now = time.time()
+        certs = []
+
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if not line_s or line_s.startswith("=="):
+                continue
+            parts = line_s.split("|")
+            if len(parts) >= 6:
+                path, subj, issuer, enddate, keysize, datesec_str = parts[:6]
+                try:
+                    datesec = float(datesec_str)
+                    days_left = int((datesec - now) / 86400)
+                except (ValueError, TypeError):
+                    days_left = 999
+
+                if days_left < 0:
+                    status = "EXPIRED"
+                elif days_left < 15:
+                    status = "CRITICAL"
+                elif days_left < 30:
+                    status = "WARNING"
+                else:
+                    status = "VALID"
+
+                # Extract domain name from subject or path
+                m_cn = re.search(r'CN=([^/,]+)', subj)
+                domain = m_cn.group(1) if m_cn else path.split("/")[-2]
+
+                certs.append({
+                    "path": path,
+                    "domain": domain,
+                    "subject": subj,
+                    "issuer": issuer,
+                    "enddate": enddate,
+                    "days_left": days_left,
+                    "keysize": keysize,
+                    "status": status,
+                })
+
+        certs.sort(key=lambda c: c["days_left"])
+        return certs
+

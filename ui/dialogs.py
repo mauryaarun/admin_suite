@@ -4,6 +4,7 @@ Main UI dialogs.
 
 from __future__ import annotations
 
+import getpass
 import os
 import re
 import socket
@@ -50,24 +51,223 @@ from admin_suite.db.backends import PG_AVAILABLE
 
 
 # ------------------------------------------------------------
+# Sudo credentials dialog and helper
+# ------------------------------------------------------------
+
+class SudoCredentialsDialog(QDialog):
+    """
+    Prompt user for root / sudo credentials when non-root profile requires administrative elevation.
+    """
+
+    def __init__(
+        self,
+        parent,
+        services,
+        profile_name: str,
+        user: str = "",
+        current_password: str = "",
+    ):
+        super().__init__(parent)
+        self.services = services
+        self.profile_name = profile_name
+        self.user = user or "current user"
+        self._is_passwordless = False
+
+        self.setWindowTitle("🔐 Root / Sudo Authentication")
+        self.setMinimumWidth(440)
+
+        theme = self.services.theme.current if hasattr(self.services, "theme") else {}
+        accent = theme.get("accent", "#3daee9")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        header_lbl = QLabel(
+            f"<b style='font-size:14px; color:{accent};'>🔐 Privileged Operation Elevation</b>"
+        )
+        layout.addWidget(header_lbl)
+
+        info_lbl = QLabel(
+            f"The profile <b>'{profile_name}'</b> operates as user <b>'{self.user}'</b> (non-root).<br>"
+            "Administrative operations require elevated root / sudo privileges.<br>"
+            f"Please enter the root user or sudo password for <b>{self.user}</b>:"
+        )
+        info_lbl.setWordWrap(True)
+        layout.addWidget(info_lbl)
+
+        pass_row = QHBoxLayout()
+        self.pass_in = QLineEdit()
+        self.pass_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pass_in.setPlaceholderText("Enter sudo / root password")
+        if current_password:
+            self.pass_in.setText(current_password)
+        pass_row.addWidget(self.pass_in, 1)
+
+        toggle_eye = QPushButton("👁️")
+        toggle_eye.setToolTip("Show / Hide password")
+        toggle_eye.setFixedWidth(36)
+
+        def _toggle_pw():
+            if self.pass_in.echoMode() == QLineEdit.EchoMode.Password:
+                self.pass_in.setEchoMode(QLineEdit.EchoMode.Normal)
+            else:
+                self.pass_in.setEchoMode(QLineEdit.EchoMode.Password)
+
+        toggle_eye.clicked.connect(_toggle_pw)
+        pass_row.addWidget(toggle_eye)
+        layout.addLayout(pass_row)
+
+        self.remember_session_chk = QCheckBox("Remember for this application session")
+        self.remember_session_chk.setChecked(True)
+        layout.addWidget(self.remember_session_chk)
+
+        self.save_profile_chk = QCheckBox("Save password securely to profile credentials")
+        self.save_profile_chk.setChecked(False)
+        layout.addWidget(self.save_profile_chk)
+
+        btn_row = QHBoxLayout()
+        skip_btn = QPushButton("⏩ Passwordless (NOPASSWD)")
+        skip_btn.setToolTip("Proceed without password if sudo NOPASSWD is configured")
+        skip_btn.clicked.connect(self._on_skip)
+        btn_row.addWidget(skip_btn)
+
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("✅ Authenticate")
+        ok_btn.setDefault(True)
+        ok_btn.setStyleSheet(f"font-weight:bold; background:{accent}; color:#fff; padding:6px 14px;")
+        ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(ok_btn)
+
+        layout.addLayout(btn_row)
+
+    def _on_skip(self):
+        self._is_passwordless = True
+        self.accept()
+
+    def _on_ok(self):
+        self._is_passwordless = False
+        self.accept()
+
+    def get_password(self) -> str:
+        if self._is_passwordless:
+            return ""
+        return self.pass_in.text()
+
+    def should_remember(self) -> bool:
+        return self.remember_session_chk.isChecked()
+
+    def should_save_to_profile(self) -> bool:
+        return self.save_profile_chk.isChecked()
+
+
+def ensure_sudo_credentials(
+    parent,
+    services,
+    profile_name: str,
+    profile_data: dict | None = None,
+    allow_prompt: bool = True,
+) -> tuple[str | None, bool]:
+    """
+    Ensure sudo credentials exist for a non-root user or localhost profile.
+    Returns (sudo_password, ok_boolean).
+    If user is root, returns ("", True).
+    If user cancels prompt, returns (None, False).
+    """
+    p = profile_data or {}
+    user = p.get("ssh_user") or p.get("user")
+    if not user:
+        if p.get("is_local") or profile_name.lower() == "localhost":
+            user = getpass.getuser()
+        else:
+            user = ""
+
+    # If already root, no sudo password needed
+    if user == "root":
+        return "", True
+
+    # Check cached or stored password
+    if hasattr(services, "get_sudo_password"):
+        pw = services.get_sudo_password(profile_name)
+        if pw is not None:
+            return pw, True
+
+    if p.get("sudo_pass"):
+        if hasattr(services, "set_sudo_password"):
+            services.set_sudo_password(profile_name, p["sudo_pass"])
+        return p["sudo_pass"], True
+
+    # For local execution, test if passwordless sudo works
+    is_local = (
+        not p
+        or bool(p.get("is_local"))
+        or profile_name.lower() == "localhost"
+        or (
+            p.get("ssh_host") in ("localhost", "127.0.0.1")
+            and bool(p.get("use_local_exec", True))
+        )
+    )
+    if is_local:
+        try:
+            check_res = subprocess.run(
+                ["sudo", "-n", "true"],
+                capture_output=True,
+                timeout=3,
+            )
+            if check_res.returncode == 0:
+                if hasattr(services, "set_sudo_password"):
+                    services.set_sudo_password(profile_name, "")
+                return "", True
+        except Exception:
+            pass
+
+    if not allow_prompt:
+        return None, False
+
+    dlg = SudoCredentialsDialog(parent, services, profile_name, user)
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        pw = dlg.get_password()
+        if hasattr(services, "set_sudo_password"):
+            services.set_sudo_password(
+                profile_name,
+                pw,
+                persist=dlg.should_save_to_profile(),
+            )
+        if dlg.should_save_to_profile() and profile_data is not None:
+            profile_data["sudo_pass"] = pw
+            if hasattr(parent, "save_profiles"):
+                parent.save_profiles()
+            elif hasattr(parent, "main_window") and hasattr(parent.main_window, "save_profiles"):
+                parent.main_window.save_profiles()
+        return pw, True
+
+    return None, False
+
+
+# ------------------------------------------------------------
 # SSH profile dialog
 # ------------------------------------------------------------
 
 class ProfileDialog(QDialog):
     """
-    Add/edit SSH profile.
+    Add/edit SSH profile with jump host profile selection and root/sudo credentials.
     """
 
     def __init__(self, parent, services, edit_data=None):
         super().__init__(parent)
 
         self.services = services
+        self.main_parent = parent
         self.edit_data = edit_data or {}
 
         e = self.edit_data
 
         self.setWindowTitle("Edit Profile" if edit_data else "Add SSH Profile")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(520)
 
         layout = QFormLayout(self)
 
@@ -106,12 +306,48 @@ class ProfileDialog(QDialog):
         self.agent_chk = QCheckBox("Use SSH agent")
         self.agent_chk.setChecked(e.get("use_agent", False))
 
+        # Root / Sudo credentials for administration
+        self.sudo_pass_in = QLineEdit()
+        self.sudo_pass_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.sudo_pass_in.setPlaceholderText("Optional: root/sudo password for administration")
+        if e.get("sudo_pass"):
+            self.sudo_pass_in.setText(e["sudo_pass"])
+
         self.initial_cmd_in = QLineEdit(e.get("initial_cmd", ""))
         self.initial_cmd_in.setPlaceholderText("e.g. sudo su -")
 
+        # Jump Host settings
         self.use_jump = QCheckBox("Route through jump host")
         self.use_jump.setChecked(e.get("use_jump", False))
         self.use_jump.stateChanged.connect(self._on_jump)
+
+        # Populate current SSH profiles as options for route through jump host
+        self.jump_profile_combo = QComboBox()
+        self.jump_profile_combo.addItem("(Manual Jump Settings)")
+
+        known_profiles = {}
+        if hasattr(parent, "profiles") and isinstance(parent.profiles, dict):
+            known_profiles = parent.profiles
+        elif hasattr(parent, "main_window") and hasattr(parent.main_window, "profiles"):
+            known_profiles = parent.main_window.profiles
+        else:
+            try:
+                from admin_suite.core.paths import PROFILES_FILE
+                from admin_suite.core.utils import read_json
+                known_profiles = read_json(PROFILES_FILE, {}) or {}
+            except Exception:
+                known_profiles = {}
+
+        self._known_jump_profiles = known_profiles
+        cur_name = e.get("name", "")
+        for p_name in sorted(known_profiles.keys()):
+            if p_name != cur_name:
+                self.jump_profile_combo.addItem(p_name)
+
+        current_jump_prof = e.get("jump_profile", "")
+        if current_jump_prof and self.jump_profile_combo.findText(current_jump_prof) >= 0:
+            self.jump_profile_combo.setCurrentText(current_jump_prof)
+        self.jump_profile_combo.currentTextChanged.connect(self._on_jump_profile_selected)
 
         self.jump_host = QLineEdit(e.get("jump_host", ""))
         self.jump_port = QLineEdit(str(e.get("jump_port", "22")))
@@ -119,9 +355,16 @@ class ProfileDialog(QDialog):
 
         self.jump_pass = QLineEdit()
         self.jump_pass.setEchoMode(QLineEdit.EchoMode.Password)
-
         if e.get("jump_pass"):
             self.jump_pass.setText(e["jump_pass"])
+
+        self.jump_key_path = QLineEdit(e.get("jump_key_path", ""))
+        browse_jump_key = QPushButton("...")
+        browse_jump_key.clicked.connect(self._browse_jump_key)
+
+        jump_key_row = QHBoxLayout()
+        jump_key_row.addWidget(self.jump_key_path, 1)
+        jump_key_row.addWidget(browse_jump_key)
 
         theme = self.services.theme.current
 
@@ -146,15 +389,20 @@ class ProfileDialog(QDialog):
         layout.addRow("SSH Key Path:", key_row)
         layout.addRow("", self.agent_chk)
 
+        layout.addRow(section("ADMINISTRATION / ELEVATION"), QLabel(""))
+        layout.addRow("Root / Sudo Password:", self.sudo_pass_in)
+
         layout.addRow(section("OPTIONS"), QLabel(""))
         layout.addRow("Initial Command:", self.initial_cmd_in)
 
         layout.addRow(section("JUMP HOST"), QLabel(""))
         layout.addRow("", self.use_jump)
+        layout.addRow("Jump SSH Profile:", self.jump_profile_combo)
         layout.addRow("Jump Host:", self.jump_host)
         layout.addRow("Jump Port:", self.jump_port)
         layout.addRow("Jump User:", self.jump_user)
-        layout.addRow("Jump Pass:", self.jump_pass)
+        layout.addRow("Jump Password/Passphrase:", self.jump_pass)
+        layout.addRow("Jump Key Path:", jump_key_row)
 
         save = QPushButton("💾 Save Profile")
         save.clicked.connect(self._validate)
@@ -168,12 +416,39 @@ class ProfileDialog(QDialog):
         on = self.use_jump.isChecked()
 
         for widget in (
+            self.jump_profile_combo,
             self.jump_host,
             self.jump_port,
             self.jump_user,
             self.jump_pass,
+            self.jump_key_path,
         ):
             widget.setEnabled(on)
+
+    def _on_jump_profile_selected(self, text: str) -> None:
+        if text == "(Manual Jump Settings)":
+            return
+        p = self._known_jump_profiles.get(text)
+        if p:
+            self.jump_host.setText(p.get("ssh_host", ""))
+            self.jump_port.setText(str(p.get("ssh_port", "22")))
+            self.jump_user.setText(p.get("ssh_user", ""))
+            j_pass = p.get("ssh_pass", "")
+            if not j_pass and hasattr(self.services, "secrets"):
+                j_pass = self.services.secrets.get(f"prof_{text}", "")
+            if j_pass:
+                self.jump_pass.setText(j_pass)
+            if p.get("ssh_key_path"):
+                self.jump_key_path.setText(p.get("ssh_key_path", ""))
+
+    def _browse_jump_key(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Jump SSH Key",
+            os.path.expanduser("~/.ssh"),
+        )
+        if path:
+            self.jump_key_path.setText(path)
 
     def _on_auth(self, method: str) -> None:
         is_key = method == "SSH Key"
@@ -210,7 +485,8 @@ class ProfileDialog(QDialog):
         self.accept()
 
     def get_data(self) -> dict:
-        return {
+        jump_prof = self.jump_profile_combo.currentText()
+        res = {
             "name": self.name_in.text().strip(),
             "group": self.group_in.text().strip() or "Default",
             "tags": self.tags_in.text().strip(),
@@ -221,14 +497,22 @@ class ProfileDialog(QDialog):
             "auth_method": self.auth_method.currentText(),
             "ssh_pass": self.pass_in.text(),
             "ssh_key_path": self.key_path_in.text().strip(),
+            "sudo_pass": self.sudo_pass_in.text(),
             "use_agent": self.agent_chk.isChecked(),
             "initial_cmd": self.initial_cmd_in.text().strip(),
             "use_jump": self.use_jump.isChecked(),
+            "jump_profile": "" if jump_prof == "(Manual Jump Settings)" else jump_prof,
             "jump_host": self.jump_host.text().strip(),
             "jump_port": self.jump_port.text().strip(),
             "jump_user": self.jump_user.text().strip(),
             "jump_pass": self.jump_pass.text(),
+            "jump_key_path": self.jump_key_path.text().strip(),
         }
+        if "is_local" in self.edit_data:
+            res["is_local"] = self.edit_data["is_local"]
+        if "use_local_exec" in self.edit_data:
+            res["use_local_exec"] = self.edit_data["use_local_exec"]
+        return res
 
 
 # ------------------------------------------------------------
@@ -256,10 +540,14 @@ class DbProfileDialog(QDialog):
         self.name_in = QLineEdit(e.get("name", ""))
 
         self.backend_in = QComboBox()
-        self.backend_in.addItems(
-            ["mysql", "sqlite"] + (["postgresql"] if PG_AVAILABLE else [])
-        )
-        self.backend_in.setCurrentText(e.get("backend", "mysql"))
+        self.backend_in.addItems(["mysql", "postgresql", "sqlite"])
+        cur_backend = str(e.get("backend", "mysql")).lower()
+        if cur_backend in ("postgres", "postgresql"):
+            self.backend_in.setCurrentText("postgresql")
+        elif cur_backend in ("mysql", "sqlite"):
+            self.backend_in.setCurrentText(cur_backend)
+        else:
+            self.backend_in.setCurrentText("mysql")
         self.backend_in.currentTextChanged.connect(self._on_backend_change)
 
         self.db_host = QLineEdit(e.get("db_host", "127.0.0.1"))
@@ -295,6 +583,13 @@ class DbProfileDialog(QDialog):
             known_profiles = list(parent.profiles.keys())
         elif hasattr(parent, "main_window") and hasattr(parent.main_window, "profiles"):
             known_profiles = list(parent.main_window.profiles.keys())
+        else:
+            try:
+                from admin_suite.core.paths import PROFILES_FILE
+                from admin_suite.core.utils import read_json
+                known_profiles = list((read_json(PROFILES_FILE, {}) or {}).keys())
+            except Exception:
+                known_profiles = []
 
         for p_name in sorted(known_profiles):
             self.ssh_profile_combo.addItem(p_name)
@@ -377,6 +672,12 @@ class DbProfileDialog(QDialog):
             w.setVisible(not is_sqlite)
         if is_sqlite:
             self.use_tunnel.setChecked(False)
+        elif backend in ("postgresql", "postgres"):
+            if self.db_port.text().strip() in ("", "3306"):
+                self.db_port.setText("5432")
+        elif backend == "mysql":
+            if self.db_port.text().strip() in ("", "5432"):
+                self.db_port.setText("3306")
 
     def _on_tunnel_toggle(self, *args) -> None:
         on = self.use_tunnel.isChecked() and self.backend_in.currentText() != "sqlite"
@@ -466,12 +767,12 @@ class ConnectionManagerDialog(QDialog):
         db_layout = QFormLayout(db_tab)
 
         self.backend = QComboBox()
-        self.backend.addItems(
-            ["mysql", "sqlite"] + (["postgresql"] if PG_AVAILABLE else [])
-        )
-        self.backend.setCurrentText(
-            self.services.config.get("db_backend", "mysql")
-        )
+        self.backend.addItems(["mysql", "postgresql", "sqlite"])
+        cur_backend = str(self.services.config.get("db_backend", "mysql")).lower()
+        if cur_backend in ("postgres", "postgresql"):
+            self.backend.setCurrentText("postgresql")
+        else:
+            self.backend.setCurrentText(cur_backend)
 
         self.ssh_host = QLineEdit(self.services.config.get("ssh_host", ""))
         self.ssh_user = QLineEdit(self.services.config.get("ssh_user", ""))

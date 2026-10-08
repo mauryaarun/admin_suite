@@ -20,10 +20,22 @@ from admin_suite.ui.dialogs import (
     SessionLogViewerDialog,
     SnippetDialog,
     SnippetManagerDialog,
+    SudoCredentialsDialog,
+    ensure_sudo_credentials,
 )
 
-from admin_suite.ui.main_window import (
-    MainWindow,
+def __getattr__(name: str):
+    if name == "MainWindow":
+        from admin_suite.ui.main_window import MainWindow
+        return MainWindow
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+from admin_suite.ui.event_logs import (
+    EventLogsWidget,
+)
+
+from admin_suite.ui.welcome import (
+    WelcomeWidget,
 )
 
 __all__ = [
@@ -38,5 +50,9 @@ __all__ = [
     "SessionLogViewerDialog",
     "SnippetDialog",
     "SnippetManagerDialog",
+    "SudoCredentialsDialog",
+    "ensure_sudo_credentials",
     "MainWindow",
+    "EventLogsWidget",
+    "WelcomeWidget",
 ]

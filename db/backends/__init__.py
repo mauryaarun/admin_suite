@@ -9,10 +9,9 @@ from admin_suite.db.backends.postgres import PGBackend, PG_AVAILABLE
 BACKENDS = {
     "mysql": MySQLBackend,
     "sqlite": SQLiteBackend,
+    "postgresql": PGBackend,
+    "postgres": PGBackend,
 }
-
-if PG_AVAILABLE:
-    BACKENDS["postgresql"] = PGBackend
 
 __all__ = [
     "BACKENDS",

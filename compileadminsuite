@@ -36,17 +36,29 @@ $PYTHON_CMD -m PyInstaller \
   --collect-all sshtunnel \
   --collect-all keyring \
   --collect-all pymysql \
+  --collect-all psycopg2 \
   --hidden-import admin_suite \
   --hidden-import admin_suite.app \
   --hidden-import admin_suite.services \
   --hidden-import admin_suite.ui.main_window \
+  --hidden-import admin_suite.db.backends.postgres \
   --hidden-import admin_suite.ai \
   --hidden-import admin_suite.ai.assistant_tab \
   --hidden-import admin_suite.ai.ollama_client \
   --hidden-import admin_suite.web \
   --hidden-import admin_suite.security \
+  --hidden-import admin_suite.security.malware_scanner \
+  --hidden-import admin_suite.security.ssl_auditor \
+  --hidden-import admin_suite.vapt \
+  --hidden-import admin_suite.vapt.tab \
+  --hidden-import admin_suite.vapt.engine \
+  --hidden-import admin_suite.vapt.reporter \
+  --hidden-import admin_suite.sysadmin.presenter \
+  --hidden-import admin_suite.ui.linux_settings_dialog \
   --collect-binaries PyQt6 \
   --collect-datas admin_suite \
+  --add-data "icon.png:." \
+  --add-data "resources:resources" \
   admin_entry.py
 
 echo "Build completed successfully! Binary located in dist/AdminSuite"

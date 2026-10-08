@@ -111,8 +111,12 @@ SELINUX_WEB_CMD = (
     "getsebool httpd_can_network_connect httpd_can_network_connect_db httpd_unified httpd_read_user_content httpd_enable_homedirs 2>/dev/null || echo 'none'"
 )
 
-# Command to fetch recent web server access and error logs across Debian and RHEL
-def web_logs_cmd(server: str = "nginx", lines: int = 150) -> str:
+# Command to fetch recent web server access and error logs across Debian, RHEL, and custom paths
+def web_logs_cmd(server: str = "nginx", lines: int = 150, custom_path: str = "") -> str:
+    if custom_path:
+        clean_path = shlex.quote(custom_path.strip())
+        return f"tail -n {lines} {clean_path} 2>/dev/null || echo 'Cannot access custom log file: {clean_path}'"
+
     if server == "nginx":
         return (
             f"echo '=== ACCESS_LOG ==='; tail -n {lines} /var/log/nginx/access.log 2>/dev/null || echo 'no access.log'; "
@@ -136,6 +140,109 @@ def web_logs_cmd(server: str = "nginx", lines: int = 150) -> str:
     return f"tail -n {lines} /var/log/syslog 2>/dev/null || tail -n {lines} /var/log/messages 2>/dev/null || echo 'no log'"
 
 
+# Apache VirtualHost Generator
+def generate_apache_vhost(
+    domain: str,
+    aliases: str = "",
+    site_type: str = "Static",
+    doc_root: str = "/var/www/html",
+    proxy_pass: str = "http://127.0.0.1:3000",
+    php_socket: str = "unix:/run/php/php8.2-fpm.sock",
+    access_log: str = "",
+    error_log: str = "",
+    sec_headers: bool = True,
+) -> str:
+    """Generate production Apache <VirtualHost> configuration for Debian or RHEL."""
+    alias_line = f"    ServerAlias {aliases}" if aliases else ""
+    acc_log = access_log or f"/var/log/apache2/{domain}.access.log combined"
+    err_log = error_log or f"/var/log/apache2/{domain}.error.log"
+
+    lines = [
+        "<VirtualHost *:80>",
+        f"    ServerName {domain}",
+    ]
+    if alias_line:
+        lines.append(alias_line)
+
+    lines.extend([
+        f"    DocumentRoot {doc_root}",
+        "",
+        f"    <Directory {doc_root}>",
+        "        Options -Indexes +FollowSymLinks",
+        "        AllowOverride All",
+        "        Require all granted",
+        "    </Directory>",
+        "",
+    ])
+
+    if sec_headers:
+        lines.extend([
+            "    # Security headers",
+            '    Header always set X-Frame-Options "SAMEORIGIN"',
+            '    Header always set X-Content-Type-Options "nosniff"',
+            '    Header always set X-XSS-Protection "1; mode=block"',
+            '    Header always set Referrer-Policy "strict-origin-when-cross-origin"',
+            "",
+        ])
+
+    if site_type == "PHP-FPM":
+        lines.extend([
+            "    # PHP-FPM FastCGI proxy",
+            f"    <FilesMatch \\.php$>",
+            f"        SetHandler \"proxy:{php_socket}|fcgi://localhost\"",
+            "    </FilesMatch>",
+            "",
+        ])
+    elif site_type in ("Reverse Proxy", "Node.js"):
+        lines.extend([
+            "    # Reverse Proxy settings",
+            "    ProxyPreserveHost On",
+            f"    ProxyPass / {proxy_pass}/",
+            f"    ProxyPassReverse / {proxy_pass}/",
+            "",
+        ])
+
+    lines.extend([
+        f"    ErrorLog {err_log}",
+        f"    CustomLog {acc_log}",
+        "</VirtualHost>",
+    ])
+    return "\n".join(lines)
+
+
+# Caddyfile Generator
+def generate_caddy_vhost(
+    domain: str,
+    aliases: str = "",
+    site_type: str = "Static",
+    doc_root: str = "/var/www/html",
+    proxy_pass: str = "http://127.0.0.1:3000",
+) -> str:
+    """Generate modern Caddy vhost block."""
+    domains = f"{domain} {aliases}".strip()
+    lines = [f"{domains} {{"]
+    if site_type == "Static":
+        lines.extend([
+            f"    root * {doc_root}",
+            "    file_server",
+            "    encode gzip zstd",
+        ])
+    elif site_type == "PHP-FPM":
+        lines.extend([
+            f"    root * {doc_root}",
+            "    php_fastcgi unix//run/php/php-fpm.sock",
+            "    file_server",
+            "    encode gzip zstd",
+        ])
+    elif site_type in ("Reverse Proxy", "Node.js"):
+        lines.extend([
+            f"    reverse_proxy {proxy_pass}",
+            "    encode gzip zstd",
+        ])
+    lines.append("}")
+    return "\n".join(lines)
+
+
 # Test configuration syntax across Debian and RHEL
 def test_all_syntax_cmd() -> str:
     return (
@@ -157,6 +264,60 @@ def test_all_syntax_cmd() -> str:
         "else "
         "  echo 'caddy not installed / no Caddyfile'; "
         "fi"
+    )
+
+
+# PHP Configuration & OPcache Inspector
+def php_config_inspector_cmd() -> str:
+    return (
+        "echo '=== PHP_VERSION ==='; php -v 2>/dev/null | head -1 || echo 'PHP CLI not installed'; "
+        "echo; echo '=== KEY_INI_DIRECTIVES ==='; "
+        "php -r 'foreach([\"memory_limit\", \"upload_max_filesize\", \"post_max_size\", \"max_execution_time\", \"display_errors\", \"opcache.enable\", \"date.timezone\"] as $k) { echo sprintf(\"%-24s = %s\\n\", $k, ini_get($k)); }' 2>/dev/null || echo 'Cannot read ini'; "
+        "echo; echo '=== LOADED_EXTENSIONS ==='; php -m 2>/dev/null | grep -v '^\\[Module\\]' | tr '\\n' ' ' || echo 'none'; "
+        "echo; echo; echo '=== OPCACHE_STATUS ==='; "
+        "php -r 'if(function_exists(\"opcache_get_status\")) { $s = opcache_get_status(false); echo \"OPcache Enabled: \" . ($s ? \"Yes\" : \"No\"); if($s) { echo \" | Memory Used: \" . round($s[\"memory_usage\"][\"used_memory\"]/1024/1024, 1) . \"MB / \" . round($s[\"memory_usage\"][\"free_memory\"]/1024/1024, 1) . \"MB\"; } } else { echo \"OPcache CLI unavailable\"; }' 2>/dev/null || echo 'OPcache inactive'"
+    )
+
+
+# Web Server Modules Inspector
+def web_modules_inspector_cmd() -> str:
+    return (
+        "echo '=== APACHE / HTTPD LOADED MODULES ==='; "
+        "apachectl -M 2>/dev/null || apache2ctl -M 2>/dev/null || httpd -M 2>/dev/null || echo 'Apache not available'; "
+        "echo; echo '=== NGINX COMPILED MODULES & VERSION ==='; "
+        "nginx -V 2>&1 || echo 'Nginx not available'"
+    )
+
+
+# HTTP Latency & Network Breakdown Probe
+def http_latency_benchmark_cmd(url: str) -> str:
+    clean_url = shlex.quote(url.strip())
+    fmt = (
+        "\\n=== HTTP LATENCY BREAKDOWN (ms) ===\\n"
+        "DNS Resolution:       %{time_namelookup} s\\n"
+        "TCP Connect:          %{time_connect} s\\n"
+        "TLS Handshake:        %{time_appconnect} s\\n"
+        "Time to First Byte:   %{time_starttransfer} s\\n"
+        "Total Request Time:   %{time_total} s\\n"
+        "HTTP Status Code:     %{http_code}\\n"
+        "Download Size:        %{size_download} bytes\\n"
+        "Download Speed:       %{speed_download} bytes/s\\n"
+    )
+    return f"curl -k -s -o /dev/null -w {shlex.quote(fmt)} {clean_url} 2>&1 || echo 'curl benchmark failed'"
+
+
+# Fix permissions for web document root
+def web_permissions_fix_cmd(doc_root: str, os_family: str = "auto") -> str:
+    clean_root = shlex.quote(doc_root.strip())
+    return (
+        f"if [ '{os_family}' = 'rhel' ] || [ -d /etc/httpd ]; then "
+        f"  chown -R apache:apache {clean_root} 2>/dev/null || chown -R nginx:nginx {clean_root} 2>/dev/null; "
+        f"else "
+        f"  chown -R www-data:www-data {clean_root} 2>/dev/null; "
+        f"fi; "
+        f"find {clean_root} -type d -exec chmod 755 {{}} + 2>/dev/null; "
+        f"find {clean_root} -type f -exec chmod 644 {{}} + 2>/dev/null; "
+        f"echo 'Permissions updated for {clean_root}'"
     )
 
 
@@ -190,3 +351,4 @@ def set_selinux_boolean_cmd(boolean_name: str, enable: bool) -> str:
     clean_bool = re.sub(r'[^a-zA-Z0-9_]', '', boolean_name)
     val = "1" if enable else "0"
     return f"setsebool -P {clean_bool} {val}"
+

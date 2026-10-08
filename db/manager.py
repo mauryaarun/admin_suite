@@ -1630,6 +1630,13 @@ class DatabaseManagerWidget(QWidget):
         self.row_count_label.setText("Executing query...")
         started_at = time.perf_counter()
 
+        is_mutation = any(query.strip().upper().startswith(k) for k in ("INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE"))
+        self.services.emit_log(
+            "DB",
+            f"Executing query on '{self.current_schema or 'default'}': {query[:120]}",
+            "AUDIT" if is_mutation else "INFO",
+        )
+
         worker = DbWorker(
             self.session_manager,
             self._build_cfg(),
@@ -1656,6 +1663,12 @@ class DatabaseManagerWidget(QWidget):
     ) -> None:
         self._last_headers = headers or []
         self._last_rows = rows or []
+
+        self.services.emit_log(
+            "DB",
+            f"Query result: {len(rows)} row(s), {len(headers)} col(s) in {elapsed * 1000:.0f} ms",
+            "SUCCESS",
+        )
 
         if not headers:
             self.result_model.clear()
@@ -1986,4 +1999,9 @@ class DatabaseManagerWidget(QWidget):
         self.row_count_label.setText(f"Error: {err}")
         self.conn_status.setText("● Error ❌")
         self.services.notifications.push("error", "Database", str(err)[:200])
+        self.services.emit_log(
+            "DB",
+            f"Database error ({self.active_profile.get('name') if getattr(self, 'active_profile', None) else 'Default'}): {err}",
+            "ERROR",
+        )
         QMessageBox.critical(self, "Database Error", str(err))

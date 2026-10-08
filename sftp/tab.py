@@ -401,6 +401,7 @@ class SFTPTab(QWidget):
             )
             self._enqueue(task)
         self.status_label.setText(f"Queued {len(sels)} item(s) for upload")
+        self.services.audit("SFTP", f"Queued {len(sels)} item(s) for upload to {self.host}:{self.remote_panel.current_path}")
 
     def download_selected(self) -> None:
         sels = self.remote_panel.get_selected_files()
@@ -418,6 +419,7 @@ class SFTPTab(QWidget):
             )
             self._enqueue(task)
         self.status_label.setText(f"Queued {len(sels)} item(s) for download")
+        self.services.audit("SFTP", f"Queued {len(sels)} item(s) for download from {self.host}:{self.remote_panel.current_path}")
 
     def _enqueue(self, task: SftpTask) -> None:
         self._queue.append(task)
@@ -602,6 +604,7 @@ class SFTPTab(QWidget):
                     chmod_path = path
                 dlg = ChmodDialog(self, actual_mode)
                 if dlg.exec():
+                    self.services.audit("SFTP", f"chmod {oct(dlg.result_mode)} on {chmod_path} ({self.host})")
                     worker = self._make_worker()
                     task = SftpTask(
                         action=SftpAction.CHMOD, path=self.remote_panel.current_path,
@@ -616,6 +619,7 @@ class SFTPTab(QWidget):
                     worker.status_update.connect(self._log)
                     self._run_op_worker(worker)
             elif action == "delete":
+                self.services.audit("SFTP", f"Deleted {path} ({self.host})")
                 worker = self._make_worker()
                 task = SftpTask(
                     action=SftpAction.DELETE, path=self.remote_panel.current_path,
@@ -636,6 +640,7 @@ class SFTPTab(QWidget):
                     new_path = data["new"]
                 except (json.JSONDecodeError, TypeError, KeyError):
                     return
+                self.services.audit("SFTP", f"Renamed {old_path} -> {new_path} ({self.host})")
                 worker = self._make_worker()
                 task = SftpTask(
                     action=SftpAction.RENAME, path=self.remote_panel.current_path,
@@ -659,11 +664,13 @@ class SFTPTab(QWidget):
                         os.makedirs(new_path, exist_ok=True)
                         self.local_panel.refresh()
                         self._log(f"✅ Created local folder: {new_path}")
+                        self.services.audit("SFTP", f"Created local directory {new_path}")
                     except Exception as e:
                         self._log(f"❌ local mkdir error: {e}")
                         QMessageBox.critical(self, "mkdir", str(e))
                 else:
                     remote = self._remote_join(path, name)
+                    self.services.audit("SFTP", f"Created remote directory {remote} ({self.host})")
                     worker = self._make_worker()
                     task = SftpTask(
                         action=SftpAction.MKDIR, path=path, remote_path=remote,

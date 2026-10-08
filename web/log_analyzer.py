@@ -1,12 +1,15 @@
 """
-Web Server Log Viewer & Traffic Analyzer.
-Parses Nginx and Apache combined log formats, displays HTTP status breakdowns (2xx, 3xx, 4xx, 5xx),
-and enables searching through recent client requests.
+Web Server Log Viewer & Traffic Analyzer for Admin Suite.
+Allows users to define custom access/error log paths (for Debian, RHEL, or custom vhosts),
+parses combined access log formats, provides real-time status code breakdowns (2xx, 3xx, 4xx, 5xx),
+top client IP rankings, and fast search filtering.
 """
 
 from __future__ import annotations
 
+import os
 import re
+from collections import Counter
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -30,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.web.commands import web_logs_cmd
 
 # Combined log format regex: IP - - [date] "METHOD PATH HTTP" STATUS BYTES "REFERRER" "USER-AGENT"
 _LOG_REGEX = re.compile(
@@ -38,7 +42,7 @@ _LOG_REGEX = re.compile(
 
 
 class WebLogAnalyzerWidget(QWidget):
-    """Real-time log viewer and status code analyzer for web servers."""
+    """Real-time log viewer and status code analyzer for web servers with custom log path support."""
 
     status_message = pyqtSignal(str)
 
@@ -54,42 +58,74 @@ class WebLogAnalyzerWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # Toolbar
-        toolbar = QHBoxLayout()
+        # Toolbar Row 1: Source & Custom Path
+        toolbar_top = QHBoxLayout()
+        toolbar_top.setSpacing(6)
 
-        toolbar.addWidget(QLabel("Server Log:"))
-        self.log_source = QComboBox()
-        self.log_source.addItems([
-            "Nginx Access (/var/log/nginx/access.log)",
-            "Nginx Error (/var/log/nginx/error.log)",
-            "Apache/HTTPD Access (Debian & RHEL)",
-            "Apache/HTTPD Error (Debian & RHEL)",
-            "Caddy Logs (journalctl / access.log)",
-        ])
-        self.log_source.currentTextChanged.connect(lambda *_: self.refresh())
-        toolbar.addWidget(self.log_source)
+        toolbar_top.addWidget(QLabel("Log Preset:"))
+        self.log_preset = QComboBox()
+        self.log_preset.addItem("Nginx Access (/var/log/nginx/access.log)", "/var/log/nginx/access.log")
+        self.log_preset.addItem("Nginx Error (/var/log/nginx/error.log)", "/var/log/nginx/error.log")
+        self.log_preset.addItem("Apache Debian Access (/var/log/apache2/access.log)", "/var/log/apache2/access.log")
+        self.log_preset.addItem("Apache Debian Error (/var/log/apache2/error.log)", "/var/log/apache2/error.log")
+        self.log_preset.addItem("Apache RHEL Access (/var/log/httpd/access_log)", "/var/log/httpd/access_log")
+        self.log_preset.addItem("Apache RHEL Error (/var/log/httpd/error_log)", "/var/log/httpd/error_log")
+        self.log_preset.addItem("Caddy Logs (/var/log/caddy/access.log)", "/var/log/caddy/access.log")
+        self.log_preset.addItem("Custom User Path...", "custom")
 
-        toolbar.addWidget(QLabel("Lines:"))
+        # Load user-saved custom paths from configuration
+        saved_custom = self.services.config.get("custom_access_log_paths", [])
+        for p in saved_custom:
+            self.log_preset.addItem(f"📁 {p}", p)
+
+        self.log_preset.currentIndexChanged.connect(self._on_preset_changed)
+        toolbar_top.addWidget(self.log_preset)
+
+        toolbar_top.addWidget(QLabel("Custom Path:"))
+        self.custom_path_in = QLineEdit()
+        self.custom_path_in.setPlaceholderText("/var/log/nginx/access.log or /var/www/site/logs/access.log")
+        self.custom_path_in.setText(self.services.config.get("custom_access_log_path", "/var/log/nginx/access.log"))
+        self.custom_path_in.returnPressed.connect(self.refresh)
+        toolbar_top.addWidget(self.custom_path_in, 1)
+
+        self.save_path_btn = QPushButton("💾 Save Path")
+        self.save_path_btn.setToolTip("Save this custom log path to your persistent presets")
+        self.save_path_btn.clicked.connect(self._save_custom_path)
+        toolbar_top.addWidget(self.save_path_btn)
+
+        layout.addLayout(toolbar_top)
+
+        # Toolbar Row 2: Lines, Filter, Status filter, Export, Refresh
+        toolbar_sub = QHBoxLayout()
+        toolbar_sub.setSpacing(6)
+
+        toolbar_sub.addWidget(QLabel("Lines:"))
         self.lines_combo = QComboBox()
-        self.lines_combo.addItems(["100", "250", "500", "1000"])
+        self.lines_combo.addItems(["100", "250", "500", "1000", "2000"])
         self.lines_combo.setCurrentText("250")
-        toolbar.addWidget(self.lines_combo)
+        toolbar_sub.addWidget(self.lines_combo)
+
+        toolbar_sub.addWidget(QLabel("Status Filter:"))
+        self.status_code_filter = QComboBox()
+        self.status_code_filter.addItems(["All Status Codes", "2xx Success", "3xx Redirects", "4xx Client Errors (404)", "5xx Server Errors (500)"])
+        self.status_code_filter.currentIndexChanged.connect(self._apply_filter)
+        toolbar_sub.addWidget(self.status_code_filter)
 
         self.filter_in = QLineEdit()
-        self.filter_in.setPlaceholderText("🔍 Filter by IP, Path, Status (e.g. 404, /api)...")
+        self.filter_in.setPlaceholderText("🔍 Filter by IP, URL Path, or User-Agent...")
         self.filter_in.textChanged.connect(self._apply_filter)
-        toolbar.addWidget(self.filter_in, 1)
+        toolbar_sub.addWidget(self.filter_in, 1)
 
         export_btn = QPushButton("📤 Export Logs")
         export_btn.setToolTip("Export structured request table or raw logs to file")
         export_btn.clicked.connect(self._export_logs)
-        toolbar.addWidget(export_btn)
+        toolbar_sub.addWidget(export_btn)
 
         self.refresh_btn = QPushButton("🔄 Refresh")
         self.refresh_btn.clicked.connect(self.refresh)
-        toolbar.addWidget(self.refresh_btn)
+        toolbar_sub.addWidget(self.refresh_btn)
 
-        layout.addLayout(toolbar)
+        layout.addLayout(toolbar_sub)
 
         # Metrics Card Bar (2xx, 3xx, 4xx, 5xx counters)
         metrics_bar = QHBoxLayout()
@@ -108,17 +144,53 @@ class WebLogAnalyzerWidget(QWidget):
 
         layout.addLayout(metrics_bar)
 
-        # Log Content Tabs (Structured Table vs Raw Monospace)
+        # Log Content Tabs
         self.tabs = QTabWidget()
 
         # Tab 1: Structured Requests Table
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Status", "Method", "Request Path", "Client IP", "Timestamp", "User-Agent"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
         self.tabs.addTab(self.table, "📊 Structured Requests")
 
-        # Tab 2: Raw Log Viewer
+        # Tab 2: Top Visitor IPs & Top URLs
+        stats_widget = QWidget()
+        stats_layout = QHBoxLayout(stats_widget)
+        stats_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Left: Top IPs
+        ip_box = QWidget()
+        ip_vbox = QVBoxLayout(ip_box)
+        ip_vbox.setContentsMargins(0, 0, 0, 0)
+        ip_vbox.addWidget(QLabel("🔝 Top Client IPs:"))
+        self.top_ip_table = QTableWidget(0, 2)
+        self.top_ip_table.setHorizontalHeaderLabels(["Requests", "Client IP"])
+        self.top_ip_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.top_ip_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        ip_vbox.addWidget(self.top_ip_table)
+        stats_layout.addWidget(ip_box, 1)
+
+        # Right: Top URLs
+        url_box = QWidget()
+        url_vbox = QVBoxLayout(url_box)
+        url_vbox.setContentsMargins(0, 0, 0, 0)
+        url_vbox.addWidget(QLabel("🔗 Top Requested Paths:"))
+        self.top_url_table = QTableWidget(0, 2)
+        self.top_url_table.setHorizontalHeaderLabels(["Hits", "URL Path"])
+        self.top_url_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.top_url_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        url_vbox.addWidget(self.top_url_table)
+        stats_layout.addWidget(url_box, 2)
+
+        self.tabs.addTab(stats_widget, "🔝 Top Clients & Paths")
+
+        # Tab 3: Raw Log Output
         self.raw_view = QPlainTextEdit()
         self.raw_view.setReadOnly(True)
         self.raw_view.setFont(QFont("JetBrains Mono, Consolas", 9))
@@ -148,35 +220,44 @@ class WebLogAnalyzerWidget(QWidget):
         l.addWidget(v_lbl)
         return frame
 
+    def _on_preset_changed(self):
+        val = self.log_preset.currentData()
+        if val and val != "custom":
+            self.custom_path_in.setText(val)
+            self.refresh()
+
+    def _save_custom_path(self):
+        path = self.custom_path_in.text().strip()
+        if not path:
+            return
+        saved = self.services.config.get("custom_access_log_paths", [])
+        if path not in saved:
+            saved.append(path)
+            self.services.config.set("custom_access_log_paths", saved)
+            self.services.config.set("custom_access_log_path", path)
+            self.services.config.save()
+            self.log_preset.addItem(f"📁 {path}", path)
+            self.services.notifications.push("ok", "Log Path Saved", path)
+
     def refresh(self) -> None:
-        """Fetch selected log file contents across Debian and RHEL systems."""
-        source = self.log_source.currentText()
+        """Fetch selected log file contents across Debian, RHEL, or custom path."""
+        path = self.custom_path_in.text().strip()
         lines = int(self.lines_combo.currentText())
 
-        if "Nginx Access" in source:
-            cmd = f"tail -n {lines} /var/log/nginx/access.log 2>/dev/null || echo 'access.log not accessible'"
-        elif "Nginx Error" in source:
-            cmd = f"tail -n {lines} /var/log/nginx/error.log 2>/dev/null || echo 'error.log not accessible'"
-        elif "Apache/HTTPD Access" in source:
-            cmd = (
-                f"tail -n {lines} /var/log/apache2/access.log 2>/dev/null "
-                f"|| tail -n {lines} /var/log/httpd/access_log 2>/dev/null "
-                f"|| tail -n {lines} /var/log/httpd/access.log 2>/dev/null "
-                f"|| echo 'Apache/HTTPD access log not accessible'"
-            )
-        elif "Apache/HTTPD Error" in source:
-            cmd = (
-                f"tail -n {lines} /var/log/apache2/error.log 2>/dev/null "
-                f"|| tail -n {lines} /var/log/httpd/error_log 2>/dev/null "
-                f"|| tail -n {lines} /var/log/httpd/error.log 2>/dev/null "
-                f"|| echo 'Apache/HTTPD error log not accessible'"
-            )
-        elif "Caddy" in source:
-            cmd = f"journalctl -u caddy -n {lines} --no-pager 2>/dev/null || tail -n {lines} /var/log/caddy/access.log 2>/dev/null || echo 'Caddy log not accessible'"
+        if path:
+            cmd = web_logs_cmd(lines=lines, custom_path=path)
         else:
-            cmd = f"tail -n {lines} /var/log/messages 2>/dev/null || tail -n {lines} /var/log/syslog 2>/dev/null || echo 'no log accessible'"
+            preset = self.log_preset.currentText()
+            if "Nginx" in preset:
+                cmd = web_logs_cmd(server="nginx", lines=lines)
+            elif "Apache" in preset:
+                cmd = web_logs_cmd(server="apache2", lines=lines)
+            elif "Caddy" in preset:
+                cmd = web_logs_cmd(server="caddy", lines=lines)
+            else:
+                cmd = web_logs_cmd(lines=lines)
 
-        self.status_message.emit("Fetching web server logs...")
+        self.status_message.emit(f"Fetching logs from {path or 'preset'}...")
 
         def on_done(out: str, rc: int):
             self.raw_view.setPlainText(out)
@@ -188,10 +269,12 @@ class WebLogAnalyzerWidget(QWidget):
     def _parse_log_text(self, text: str) -> None:
         parsed: list[dict[str, Any]] = []
         c_2xx = c_3xx = c_4xx = c_5xx = 0
+        ip_counter = Counter()
+        url_counter = Counter()
 
         for line in text.splitlines():
             line_s = line.strip()
-            if not line_s:
+            if not line_s or line_s.startswith("===") or line_s.startswith("Cannot access"):
                 continue
 
             m = _LOG_REGEX.match(line_s)
@@ -207,6 +290,9 @@ class WebLogAnalyzerWidget(QWidget):
                     c_4xx += 1
                 elif status_code >= 500:
                     c_5xx += 1
+
+                ip_counter[ip] += 1
+                url_counter[path] += 1
 
                 parsed.append({
                     "status": status,
@@ -226,6 +312,7 @@ class WebLogAnalyzerWidget(QWidget):
 
         self._parsed_rows = parsed
         self._render_table(parsed)
+        self._render_rankings(ip_counter, url_counter)
 
     def _set_card_val(self, frame: QFrame, val: str) -> None:
         lbl = frame.findChild(QLabel, "val_lbl")
@@ -236,7 +323,6 @@ class WebLogAnalyzerWidget(QWidget):
         theme = self.services.theme.current
         self.table.setRowCount(0)
 
-        # Show newest entries first
         for row_idx, r in enumerate(reversed(rows)):
             self.table.insertRow(row_idx)
 
@@ -262,16 +348,52 @@ class WebLogAnalyzerWidget(QWidget):
             for col, itm in enumerate([status_item, method_item, path_item, ip_item, time_item, ua_item]):
                 self.table.setItem(row_idx, col, itm)
 
-    def _apply_filter(self, text: str) -> None:
-        text = text.lower().strip()
-        if not text:
-            self._render_table(self._parsed_rows)
-            return
+    def _render_rankings(self, ip_counter: Counter, url_counter: Counter) -> None:
+        # Top IPs
+        top_ips = ip_counter.most_common(25)
+        self.top_ip_table.setRowCount(len(top_ips))
+        for row, (ip, count) in enumerate(top_ips):
+            c_item = QTableWidgetItem(str(count))
+            c_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.top_ip_table.setItem(row, 0, c_item)
+            self.top_ip_table.setItem(row, 1, QTableWidgetItem(ip))
 
-        filtered = [
-            r for r in self._parsed_rows
-            if text in r["path"].lower() or text in r["ip"] or text in r["status"] or text in r["method"].lower()
-        ]
+        # Top URLs
+        top_urls = url_counter.most_common(25)
+        self.top_url_table.setRowCount(len(top_urls))
+        for row, (url, count) in enumerate(top_urls):
+            c_item = QTableWidgetItem(str(count))
+            c_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.top_url_table.setItem(row, 0, c_item)
+            self.top_url_table.setItem(row, 1, QTableWidgetItem(url))
+
+    def _apply_filter(self) -> None:
+        text = self.filter_in.text().lower().strip()
+        status_filter_idx = self.status_code_filter.currentIndex()
+
+        filtered = []
+        for r in self._parsed_rows:
+            code = int(r["status"]) if r["status"].isdigit() else 200
+
+            # Status filter
+            if status_filter_idx == 1 and not (200 <= code < 300):
+                continue
+            if status_filter_idx == 2 and not (300 <= code < 400):
+                continue
+            if status_filter_idx == 3 and not (400 <= code < 500):
+                continue
+            if status_filter_idx == 4 and not (code >= 500):
+                continue
+
+            # Text filter
+            if text:
+                if (text not in r["path"].lower() and text not in r["ip"] and
+                    text not in r["status"] and text not in r["method"].lower() and
+                    text not in r["ua"].lower()):
+                    continue
+
+            filtered.append(r)
+
         self._render_table(filtered)
 
     def _export_logs(self) -> None:
@@ -292,4 +414,3 @@ class WebLogAnalyzerWidget(QWidget):
                 self, raw_text, "web_server_logs.log", "Export Raw Web Server Logs",
                 "Log Files (*.log);;Text Files (*.txt);;All Files (*)"
             )
-

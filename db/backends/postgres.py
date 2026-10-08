@@ -1,20 +1,33 @@
 """
 PostgreSQL backend.
+Supports both psycopg2 and psycopg (v3).
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
+PG_AVAILABLE = False
+PG_DRIVER = None
+
 try:
     import psycopg2
     import psycopg2.extras
 
     PG_AVAILABLE = True
-
+    PG_DRIVER = "psycopg2"
 except ImportError:
-    psycopg2 = None
-    PG_AVAILABLE = False
+    try:
+        import psycopg
+        import psycopg.rows
+
+        PG_AVAILABLE = True
+        PG_DRIVER = "psycopg"
+    except ImportError:
+        psycopg2 = None
+        psycopg = None
+        PG_AVAILABLE = False
+        PG_DRIVER = None
 
 
 class PGBackend:
@@ -32,16 +45,34 @@ class PGBackend:
     ):
         if not PG_AVAILABLE:
             raise RuntimeError(
-                "psycopg2 is not installed. "
+                "PostgreSQL driver is not installed. "
                 "Install it with: pip install psycopg2-binary"
             )
 
+        target_host = host or cfg.get("db_host", "127.0.0.1")
+        target_port = int(port or cfg.get("db_port", 5432) or 5432)
+        target_user = cfg.get("db_user", "")
+        target_pass = cfg.get("db_pass", "")
+        target_db = cfg.get("db_name") or "postgres"
+
+        if PG_DRIVER == "psycopg":
+            import psycopg.rows
+            return psycopg.connect(
+                host=target_host,
+                port=target_port,
+                user=target_user,
+                password=target_pass,
+                dbname=target_db,
+                connect_timeout=10,
+                row_factory=psycopg.rows.dict_row,
+            )
+
         return psycopg2.connect(
-            host=host or cfg.get("db_host", "127.0.0.1"),
-            port=int(port or cfg.get("db_port", 5432) or 5432),
-            user=cfg.get("db_user", ""),
-            password=cfg.get("db_pass", ""),
-            dbname=cfg.get("db_name") or "postgres",
+            host=target_host,
+            port=target_port,
+            user=target_user,
+            password=target_pass,
+            dbname=target_db,
             connect_timeout=10,
             cursor_factory=psycopg2.extras.RealDictCursor,
         )
@@ -130,7 +161,8 @@ class PGBackend:
 
             return headers, [list(row.values()) for row in cur.fetchall()], True
 
-        cur.connection.commit()
+        if hasattr(cur, "connection") and cur.connection:
+            cur.connection.commit()
 
         return [], [], False
 

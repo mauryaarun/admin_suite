@@ -254,40 +254,49 @@ class AIAssistantTab(QWidget):
         splitter.addWidget(out_box)
         layout.addWidget(splitter, 1)
 
-        # 6. Action Bar
-        self.action_bar = QHBoxLayout()
+        # 6. Action Bar (2 compact rows)
+        self.action_bar = QVBoxLayout()
         self.action_bar.setSpacing(4)
+        self.action_bar.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_run_term = QPushButton("▶ Run in Terminal")
+        action_row1 = QHBoxLayout()
+        action_row1.setSpacing(4)
+
+        self.btn_run_term = QPushButton("▶ Run in Term")
         self.btn_run_term.setStyleSheet(f"background:{self._ok};color:white;font-weight:bold;padding:4px 8px;font-size:11px;")
         self.btn_run_term.clicked.connect(lambda: self.execute_in_terminal(run=True))
-        self.action_bar.addWidget(self.btn_run_term)
+        action_row1.addWidget(self.btn_run_term)
 
-        self.btn_insert_term = QPushButton("➕ Insert in Term")
-        self.btn_insert_term.setStyleSheet(f"padding:4px 6px;font-size:11px;")
+        self.btn_insert_term = QPushButton("➕ Insert Term")
+        self.btn_insert_term.setStyleSheet("padding:4px 6px;font-size:11px;")
         self.btn_insert_term.clicked.connect(lambda: self.execute_in_terminal(run=False))
-        self.action_bar.addWidget(self.btn_insert_term)
-
-        self.btn_run_db = QPushButton("▶ Run in DB (F5)")
-        self.btn_run_db.setStyleSheet("background:#0078d4;color:white;font-weight:bold;padding:4px 8px;font-size:11px;")
-        self.btn_run_db.clicked.connect(lambda: self.execute_in_db(run=True))
-        self.action_bar.addWidget(self.btn_run_db)
-
-        self.btn_insert_db = QPushButton("📝 Paste to SQL")
-        self.btn_insert_db.setStyleSheet("padding:4px 6px;font-size:11px;")
-        self.btn_insert_db.clicked.connect(lambda: self.execute_in_db(run=False))
-        self.action_bar.addWidget(self.btn_insert_db)
+        action_row1.addWidget(self.btn_insert_term)
 
         self.copy_btn = QPushButton("📋 Copy")
         self.copy_btn.setStyleSheet("padding:4px 8px;font-size:11px;")
         self.copy_btn.clicked.connect(self.copy_output)
-        self.action_bar.addWidget(self.copy_btn)
+        action_row1.addWidget(self.copy_btn)
+
+        action_row2 = QHBoxLayout()
+        action_row2.setSpacing(4)
+
+        self.btn_run_db = QPushButton("▶ Run DB (F5)")
+        self.btn_run_db.setStyleSheet("background:#0078d4;color:white;font-weight:bold;padding:4px 8px;font-size:11px;")
+        self.btn_run_db.clicked.connect(lambda: self.execute_in_db(run=True))
+        action_row2.addWidget(self.btn_run_db)
+
+        self.btn_insert_db = QPushButton("📝 Paste SQL")
+        self.btn_insert_db.setStyleSheet("padding:4px 6px;font-size:11px;")
+        self.btn_insert_db.clicked.connect(lambda: self.execute_in_db(run=False))
+        action_row2.addWidget(self.btn_insert_db)
 
         self.clear_btn = QPushButton("🧹 Clear")
         self.clear_btn.setStyleSheet("padding:4px 6px;font-size:11px;")
         self.clear_btn.clicked.connect(self._clear_all)
-        self.action_bar.addWidget(self.clear_btn)
+        action_row2.addWidget(self.clear_btn)
 
+        self.action_bar.addLayout(action_row1)
+        self.action_bar.addLayout(action_row2)
         layout.addLayout(self.action_bar)
 
         self.status_label = QLabel("Ready.")
@@ -591,6 +600,7 @@ class AIAssistantTab(QWidget):
         self._token_count = 0
         self._cancel_flag = False
         self._push_history(task)
+        self.services.emit_log("AI", f"Copilot prompt dispatched ({model}): {task[:100]}", "INFO")
 
         signals = _GenSignals()
         signals.token.connect(self._on_token)
@@ -634,12 +644,14 @@ class AIAssistantTab(QWidget):
         speed = (tokens / elapsed) if elapsed > 0 else 0
         self.stats_label.setText(f"⏱ {elapsed:.1f}s · {tokens} tokens · {speed:.1f} t/s")
         self._update_action_buttons(bool(full_text.strip()))
+        self.services.emit_log("AI", f"Copilot response finished in {elapsed:.2f}s ({tokens} tokens)", "SUCCESS")
 
     def _on_error(self, err: str):
         self._set_busy(False)
         self.output_edit.setPlainText(f"[ERROR] Could not connect to Ollama:\n{err}")
         self.status_label.setText("❌ Generation failed. Check if Ollama is running.")
         self._update_action_buttons(False)
+        self.services.emit_log("AI", f"Copilot generation failed: {err}", "ERROR")
 
     def _cancel_generation(self):
         self._cancel_flag = True

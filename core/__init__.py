@@ -26,6 +26,8 @@ from admin_suite.core.paths import (
     XTERM_DIR,
     HOST_KEYS_FILE,
     ensure_dirs,
+    get_app_icon_path,
+    get_app_icon,
 )
 
 from admin_suite.core.utils import (
@@ -49,6 +51,7 @@ from admin_suite.core.secrets import (
 
 from admin_suite.core.logging import (
     DebugPipeline,
+    EventLogPipeline,
 )
 
 from admin_suite.core.notifications import (
@@ -77,6 +80,8 @@ __all__ = [
     "XTERM_DIR",
     "HOST_KEYS_FILE",
     "ensure_dirs",
+    "get_app_icon_path",
+    "get_app_icon",
     "read_json",
     "write_json_secure",
     "safe_int",
@@ -88,6 +93,7 @@ __all__ = [
     "ConfigStore",
     "SecretStore",
     "DebugPipeline",
+    "EventLogPipeline",
     "NotificationHub",
     "UI_THEMES",
     "TERMINAL_THEMES",

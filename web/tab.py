@@ -14,6 +14,7 @@ from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.ssh.remote_exec import RemoteExecThread
+from admin_suite.ui.dialogs import SudoCredentialsDialog, ensure_sudo_credentials
 from admin_suite.web.vhosts import VHostManagerWidget
 from admin_suite.web.ssl_manager import SSLManagerWidget
 from admin_suite.web.runtimes import RuntimesManagerWidget
@@ -62,7 +64,20 @@ class WebManagerTab(QWidget):
         head_layout = QHBoxLayout(head_frame)
         head_layout.setContentsMargins(8, 4, 8, 4)
 
-        title = QLabel(f"🌐 Web Hosting Manager — {self.profile_name}")
+        is_local_display = (
+            " (Localhost)"
+            if (
+                not self.profile
+                or bool(self.profile.get("is_local"))
+                or self.profile_name.lower() == "localhost"
+                or (
+                    self.profile.get("ssh_host") in ("localhost", "127.0.0.1")
+                    and bool(self.profile.get("use_local_exec", True))
+                )
+            )
+            else ""
+        )
+        title = QLabel(f"🌐 Web Hosting Manager — {self.profile_name}{is_local_display}")
         title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {theme.get('accent', '#3daee9')};")
         head_layout.addWidget(title)
 
@@ -84,6 +99,17 @@ class WebManagerTab(QWidget):
         self.sudo_chk = QCheckBox("Use sudo")
         self.sudo_chk.setChecked(True)
         head_layout.addWidget(self.sudo_chk)
+
+        self.sudo_btn = QPushButton("🔑")
+        self.sudo_btn.setToolTip("Configure Root / Sudo credentials for this profile")
+        self.sudo_btn.setFixedWidth(28)
+        self.sudo_btn.clicked.connect(self._configure_sudo_credentials)
+        head_layout.addWidget(self.sudo_btn)
+
+        settings_btn = QPushButton("⚙️ Distro & Log Settings")
+        settings_btn.setToolTip("Configure Linux distro preference, custom log paths, and firewall")
+        settings_btn.clicked.connect(self._open_settings)
+        head_layout.addWidget(settings_btn)
 
         test_syntax_btn = QPushButton("🩺 Test Syntax")
         test_syntax_btn.clicked.connect(self._test_all_syntax)
@@ -144,17 +170,70 @@ class WebManagerTab(QWidget):
         if hasattr(widget, "refresh"):
             widget.refresh()
 
+    def _open_settings(self) -> None:
+        from admin_suite.ui.linux_settings_dialog import LinuxSettingsDialog
+        dlg = LinuxSettingsDialog(self.services, self)
+        dlg.settings_applied.connect(self.refresh_all)
+        dlg.exec()
+
     def refresh_all(self) -> None:
         self._probe_web_services()
         widget = self.tabs.currentWidget()
         if hasattr(widget, "refresh"):
             widget.refresh()
 
+    def _configure_sudo_credentials(self) -> None:
+        import getpass
+        user = ""
+        if self.profile:
+            user = self.profile.get("ssh_user") or self.profile.get("user") or ""
+        if not user:
+            is_local = (
+                not self.profile
+                or bool(self.profile.get("is_local"))
+                or self.profile_name.lower() == "localhost"
+            )
+            user = getpass.getuser() if is_local else ""
+        cur_pw = self.services.get_sudo_password(self.profile_name) or ""
+        dlg = SudoCredentialsDialog(
+            self,
+            self.services,
+            self.profile_name,
+            user,
+            current_password=cur_pw,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            pw = dlg.get_password()
+            self.services.set_sudo_password(
+                self.profile_name,
+                pw,
+                persist=dlg.should_save_to_profile(),
+            )
+            if dlg.should_save_to_profile() and self.profile is not None:
+                self.profile["sudo_pass"] = pw
+            self.services.notifications.push(
+                "ok",
+                "Root/Sudo Credentials",
+                f"Updated elevation credentials for {self.profile_name}",
+            )
+
     def execute_command(self, cmd: str, callback: Callable[[str, int], None]) -> None:
         """Run command remotely over SSH or locally via subprocess, with optional sudo."""
+        sudo_pw = None
         if self.sudo_chk.isChecked() and not cmd.strip().startswith("sudo"):
+            sudo_pw, ok = ensure_sudo_credentials(
+                self, self.services, self.profile_name, self.profile
+            )
+            if not ok:
+                self._set_status("Execution cancelled: Root/sudo elevation required")
+                callback("Cancelled: Root/sudo credentials required", 1)
+                return
+
             escaped = cmd.replace("'", "'\\''")
-            cmd = f"sudo bash -c '{escaped}'"
+            if sudo_pw:
+                cmd = f"sudo -S -p '' bash -c '{escaped}'"
+            else:
+                cmd = f"sudo bash -c '{escaped}'"
 
         self._cleanup_workers()
 
@@ -162,10 +241,18 @@ class WebManagerTab(QWidget):
             profile=self.profile,
             cmd=cmd,
             timeout=60,
+            sudo_password=sudo_pw,
         )
         self._workers.append(worker)
 
         def on_finished(out: str, rc: int):
+            if "sudo: a password is required" in out or "incorrect password attempt" in out:
+                self.services.clear_sudo_password(self.profile_name)
+                self.services.notifications.push(
+                    "error",
+                    "Web Manager (Sudo Auth Failed)",
+                    "Root/sudo authentication failed. Invalid password.",
+                )
             callback(out, rc)
 
         worker.finished_cmd.connect(on_finished)

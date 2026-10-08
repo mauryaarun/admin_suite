@@ -1,7 +1,8 @@
 """
-Web Tools & SELinux Manager.
+Web Tools, SELinux Policies & Diagnostic Cockpit.
 Provides SELinux Web Booleans manager for RHEL/CentOS/Fedora,
-HTTP Endpoint & SSL Probe, DNS Diagnostic resolver, and Web Services controller.
+PHP Configuration & OPcache Inspector, Web Server Modules Inspector,
+HTTP Endpoint Latency Benchmark, Permissions Fixer, DNS Diagnostic resolver, and Syntax Validator.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from admin_suite.core.export import ReportExporter
 
 
 class WebToolsWidget(QWidget):
-    """Integrated Web Server Diagnostics, SELinux Manager, and Network Probes."""
+    """Integrated Web Server Diagnostics, SELinux Manager, PHP/Module Inspectors, and Network Probes."""
 
     status_message = pyqtSignal(str)
 
@@ -118,10 +119,74 @@ class WebToolsWidget(QWidget):
         ReportExporter.attach_export_context_menu(self.se_output)
         selinux_layout.addWidget(self.se_output)
 
-        tabs.addTab(selinux_tab, "🛡️ SELinux Web Policies")
+        tabs.addTab(selinux_tab, "🛡️ SELinux Policies")
 
         # ------------------------------------------------------------
-        # Tab 2: HTTP Endpoint & Header Inspector
+        # Tab 2: PHP Configuration & OPcache Inspector
+        # ------------------------------------------------------------
+        php_tab = QWidget()
+        php_layout = QVBoxLayout(php_tab)
+
+        php_bar = QHBoxLayout()
+        php_title = QLabel("🐘 PHP Configuration, php.ini & OPcache Inspector")
+        php_title.setStyleSheet(f"font-weight:bold;color:{theme.get('accent', '#3daee9')};")
+        php_bar.addWidget(php_title)
+        php_bar.addStretch()
+
+        php_refresh_btn = QPushButton("🔄 Inspect PHP")
+        php_refresh_btn.clicked.connect(self._inspect_php)
+        php_bar.addWidget(php_refresh_btn)
+
+        php_export_btn = QPushButton("📤 Export PHP Info")
+        php_export_btn.clicked.connect(lambda: ReportExporter.export_text_file(
+            self, self.php_output.toPlainText(), "php_config_report.txt", "Export PHP Report"
+        ))
+        php_bar.addWidget(php_export_btn)
+        php_layout.addLayout(php_bar)
+
+        self.php_output = QPlainTextEdit()
+        self.php_output.setReadOnly(True)
+        self.php_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.php_output.setPlaceholderText("Inspects PHP CLI version, upload_max_filesize, memory_limit, extensions, and OPcache...")
+        ReportExporter.attach_export_context_menu(self.php_output)
+        php_layout.addWidget(self.php_output, 1)
+
+        tabs.addTab(php_tab, "🐘 PHP & OPcache")
+
+        # ------------------------------------------------------------
+        # Tab 3: Web Server Modules Inspector
+        # ------------------------------------------------------------
+        modules_tab = QWidget()
+        modules_layout = QVBoxLayout(modules_tab)
+
+        mod_bar = QHBoxLayout()
+        mod_title = QLabel("🧩 Loaded Web Server Modules (Apache & Nginx)")
+        mod_title.setStyleSheet(f"font-weight:bold;color:{theme.get('accent', '#3daee9')};")
+        mod_bar.addWidget(mod_title)
+        mod_bar.addStretch()
+
+        mod_refresh_btn = QPushButton("🔄 Inspect Modules")
+        mod_refresh_btn.clicked.connect(self._inspect_modules)
+        mod_bar.addWidget(mod_refresh_btn)
+
+        mod_export_btn = QPushButton("📤 Export Modules")
+        mod_export_btn.clicked.connect(lambda: ReportExporter.export_text_file(
+            self, self.modules_output.toPlainText(), "web_modules_report.txt", "Export Web Modules Report"
+        ))
+        mod_bar.addWidget(mod_export_btn)
+        modules_layout.addLayout(mod_bar)
+
+        self.modules_output = QPlainTextEdit()
+        self.modules_output.setReadOnly(True)
+        self.modules_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.modules_output.setPlaceholderText("Lists compiled Nginx modules (nginx -V) and loaded Apache modules (apache2ctl -M / httpd -M)...")
+        ReportExporter.attach_export_context_menu(self.modules_output)
+        modules_layout.addWidget(self.modules_output, 1)
+
+        tabs.addTab(modules_tab, "🧩 Server Modules")
+
+        # ------------------------------------------------------------
+        # Tab 4: HTTP Latency & Network Probe
         # ------------------------------------------------------------
         probe_tab = QWidget()
         probe_layout = QVBoxLayout(probe_tab)
@@ -137,6 +202,11 @@ class WebToolsWidget(QWidget):
         probe_btn.clicked.connect(self._run_http_probe)
         probe_bar.addWidget(probe_btn)
 
+        bench_btn = QPushButton("⏱️ Latency Breakdown")
+        bench_btn.setToolTip("Break down DNS, TCP, TLS handshake, TTFB, and transfer time using curl")
+        bench_btn.clicked.connect(self._run_latency_benchmark)
+        probe_bar.addWidget(bench_btn)
+
         export_probe_btn = QPushButton("📤 Export Output")
         export_probe_btn.clicked.connect(lambda: ReportExporter.export_text_file(
             self, self.probe_output.toPlainText(), "http_probe_results.txt", "Export Probe Results"
@@ -148,14 +218,49 @@ class WebToolsWidget(QWidget):
         self.probe_output = QPlainTextEdit()
         self.probe_output.setReadOnly(True)
         self.probe_output.setFont(QFont("JetBrains Mono, Consolas", 10))
-        self.probe_output.setPlaceholderText("HTTP Response headers, status codes, and latency will appear here...")
+        self.probe_output.setPlaceholderText("HTTP Response headers, latency breakdown, and status codes will appear here...")
         ReportExporter.attach_export_context_menu(self.probe_output)
         probe_layout.addWidget(self.probe_output, 1)
 
-        tabs.addTab(probe_tab, "🌐 HTTP Header & Latency Probe")
+        tabs.addTab(probe_tab, "🌐 HTTP & Latency Probe")
 
         # ------------------------------------------------------------
-        # Tab 3: DNS & Name Resolution Diagnostics
+        # Tab 5: Web Root Permissions Fixer
+        # ------------------------------------------------------------
+        perm_tab = QWidget()
+        perm_layout = QVBoxLayout(perm_tab)
+
+        perm_bar = QHBoxLayout()
+        perm_bar.addWidget(QLabel("Document Root:"))
+        self.perm_dir_in = QLineEdit("/var/www/html")
+        perm_bar.addWidget(self.perm_dir_in, 1)
+
+        fix_btn = QPushButton("🔧 Fix Permissions (755 Dirs / 644 Files)")
+        fix_btn.setToolTip("Sets directories to 755, files to 644, and ownership to www-data (Debian) or apache/nginx (RHEL)")
+        fix_btn.clicked.connect(self._fix_permissions)
+        perm_bar.addWidget(fix_btn)
+
+        perm_layout.addLayout(perm_bar)
+
+        perm_note = QLabel(
+            "Safely applies standard web server permissions:\n"
+            "• Directories: chmod 755 (drwxr-xr-x)\n"
+            "• Files: chmod 644 (-rw-r--r--)\n"
+            "• Ownership: www-data:www-data on Debian/Ubuntu, or apache:apache / nginx:nginx on RHEL/CentOS."
+        )
+        perm_note.setStyleSheet(f"color: {theme.get('sub', '#888')}; padding: 4px;")
+        perm_layout.addWidget(perm_note)
+
+        self.perm_output = QPlainTextEdit()
+        self.perm_output.setReadOnly(True)
+        self.perm_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.perm_output.setPlaceholderText("Permission fix execution logs will appear here...")
+        perm_layout.addWidget(self.perm_output, 1)
+
+        tabs.addTab(perm_tab, "🔧 Permissions Fixer")
+
+        # ------------------------------------------------------------
+        # Tab 6: DNS Diagnostics
         # ------------------------------------------------------------
         dns_tab = QWidget()
         dns_layout = QVBoxLayout(dns_tab)
@@ -189,7 +294,7 @@ class WebToolsWidget(QWidget):
         tabs.addTab(dns_tab, "🔎 DNS Diagnostics")
 
         # ------------------------------------------------------------
-        # Tab 4: All Web Configurations Syntax Test
+        # Tab 7: Multi-Server Syntax Validator
         # ------------------------------------------------------------
         syntax_tab = QWidget()
         syntax_layout = QVBoxLayout(syntax_tab)
@@ -232,7 +337,6 @@ class WebToolsWidget(QWidget):
 
         def on_done(out: str, rc: int):
             self.se_output.setPlainText(out)
-            theme = self.services.theme.current
 
             # Parse status
             is_enforcing = "enforcing" in out.lower()
@@ -253,7 +357,6 @@ class WebToolsWidget(QWidget):
             bool_enabled_state = not is_disabled
             for b_name, chk in self.bool_switches.items():
                 chk.setEnabled(bool_enabled_state)
-                # Look for line like: httpd_can_network_connect --> on
                 m = re.search(rf"{b_name}\s+(?:-->\s+)?(on|off)", out)
                 if m:
                     chk.setChecked(m.group(1) == "on")
@@ -281,6 +384,30 @@ class WebToolsWidget(QWidget):
 
         self.exec_fn(cmd, on_done)
 
+    def _inspect_php(self) -> None:
+        from admin_suite.web.commands import php_config_inspector_cmd
+        cmd = php_config_inspector_cmd()
+        self.status_message.emit("Inspecting PHP configuration and OPcache...")
+        self.php_output.setPlainText("Querying PHP runtime information...\n")
+
+        def on_done(out: str, rc: int):
+            self.php_output.setPlainText(out)
+            self.status_message.emit("PHP inspection completed.")
+
+        self.exec_fn(cmd, on_done)
+
+    def _inspect_modules(self) -> None:
+        from admin_suite.web.commands import web_modules_inspector_cmd
+        cmd = web_modules_inspector_cmd()
+        self.status_message.emit("Inspecting web server modules...")
+        self.modules_output.setPlainText("Querying loaded modules...\n")
+
+        def on_done(out: str, rc: int):
+            self.modules_output.setPlainText(out)
+            self.status_message.emit("Modules inspection completed.")
+
+        self.exec_fn(cmd, on_done)
+
     def _run_http_probe(self) -> None:
         url = self.url_in.text().strip()
         if not url:
@@ -297,6 +424,42 @@ class WebToolsWidget(QWidget):
         def on_done(out: str, rc: int):
             self.probe_output.setPlainText(f"$ {cmd}\n\n{out}")
             self.status_message.emit("HTTP probe completed.")
+
+        self.exec_fn(cmd, on_done)
+
+    def _run_latency_benchmark(self) -> None:
+        url = self.url_in.text().strip()
+        if not url:
+            return
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"http://{url}"
+            self.url_in.setText(url)
+
+        from admin_suite.web.commands import http_latency_benchmark_cmd
+        cmd = http_latency_benchmark_cmd(url)
+        self.status_message.emit(f"Profiling latency for {url}...")
+        self.probe_output.setPlainText(f"$ Running detailed latency breakdown for {url}...\n\n")
+
+        def on_done(out: str, rc: int):
+            self.probe_output.setPlainText(out)
+            self.status_message.emit("Latency benchmark finished.")
+
+        self.exec_fn(cmd, on_done)
+
+    def _fix_permissions(self) -> None:
+        doc_root = self.perm_dir_in.text().strip()
+        if not doc_root:
+            return
+        from admin_suite.web.commands import web_permissions_fix_cmd
+        os_fam = self.services.config.get("os_family", "auto")
+        cmd = web_permissions_fix_cmd(doc_root, os_fam)
+        self.status_message.emit(f"Fixing permissions for {doc_root}...")
+        self.perm_output.setPlainText(f"$ {cmd}\n\nApplying permissions...\n")
+
+        def on_done(out: str, rc: int):
+            self.perm_output.setPlainText(out)
+            self.status_message.emit("Permissions updated.")
+            self.services.notifications.push("ok" if rc == 0 else "error", "Permissions Fix", out.strip()[:100])
 
         self.exec_fn(cmd, on_done)
 

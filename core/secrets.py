@@ -25,39 +25,46 @@ class SecretStore:
 
     def __init__(self, app_name: str = APP_NAME):
         self.app_name = app_name
+        self._memory: dict[str, str] = {}
 
     def get(self, key: str, default: str = "") -> str:
         """
         Get secret. Returns default if unavailable.
         """
-        if keyring is None:
-            return default
+        if keyring is not None:
+            try:
+                value = keyring.get_password(self.app_name, key)
+                if value is not None:
+                    return value
+            except Exception:
+                pass
 
-        try:
-            value = keyring.get_password(self.app_name, key)
-            return value if value is not None else default
-        except Exception:
-            return default
+        return self._memory.get(key, default)
 
     def set(self, key: str, value: Optional[str]) -> None:
         """
         Store or delete secret.
         """
-        if keyring is None:
+        if not value:
+            self.delete(key)
             return
 
-        try:
-            if value:
+        stored_in_keyring = False
+        if keyring is not None:
+            try:
                 keyring.set_password(self.app_name, key, value)
-            else:
-                self.delete(key)
-        except Exception:
-            pass
+                stored_in_keyring = True
+            except Exception:
+                pass
+
+        # In-memory fallback if keyring is unavailable or failed
+        self._memory[key] = value
 
     def delete(self, key: str) -> None:
         """
         Delete secret if it exists.
         """
+        self._memory.pop(key, None)
         if keyring is None:
             return
 

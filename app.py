@@ -45,6 +45,8 @@ logging.basicConfig(
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setApplicationName("Admin Suite")
+    app.setDesktopFileName("AdminSuite")
     app.setStyle("Fusion")
 
     try:
@@ -52,11 +54,18 @@ def main() -> int:
     except AttributeError:
         pass
 
+    from admin_suite.core.paths import get_app_icon
+    app_icon = get_app_icon()
+    if app_icon and not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+
     services = AppServices()
 
     services.apply_theme(app)
 
     window = MainWindow(services)
+    if app_icon and not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
 
     return app.exec()

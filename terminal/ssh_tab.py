@@ -209,6 +209,10 @@ class SshTerminalTab(TerminalBaseTab):
                 "SSH Connected",
                 f"{self.user}@{self.host}",
             )
+            self.services.audit(
+                "SSH",
+                f"SSH session established: {self.name} ({self.user}@{self.host}:{self.port})",
+            )
 
             QTimer.singleShot(250, self.force_focus)
 
@@ -226,6 +230,11 @@ class SshTerminalTab(TerminalBaseTab):
             "error",
             "SSH Error",
             f"{self.name}: {error}",
+        )
+        self.services.emit_log(
+            "SSH",
+            f"SSH error on {self.name}: {error}",
+            "ERROR",
         )
 
         if self._manual_disconnect:
@@ -246,16 +255,18 @@ class SshTerminalTab(TerminalBaseTab):
             )
 
             self.services.emit_log(
-                "ssh",
+                "SSH",
                 "Auto-reconnect "
                 f"{self._reconnect_attempts}/{self._max_reconnect} "
                 f"for {self.name} in {delay}ms",
+                "WARN",
             )
 
             QTimer.singleShot(delay, self._auto_reconnect)
 
     def _on_closed(self) -> None:
         self.write_output("\r\n\x1b[33m[Connection closed]\x1b[0m\r\n")
+        self.services.emit_log("SSH", f"SSH session closed: {self.name}", "INFO")
 
         if self._manual_disconnect:
             self.set_status("● Disconnected", self.theme.get("sub", "#888"))

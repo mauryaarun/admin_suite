@@ -31,6 +31,7 @@ class SshCredentials:
     password: Optional[str] = None
     passphrase: Optional[str] = None
     key_path: Optional[str] = None
+    sudo_password: Optional[str] = None
 
     @property
     def has_key(self) -> bool:
@@ -45,22 +46,26 @@ def profile_creds(data: dict[str, Any]) -> SshCredentials:
     - auth_method: "Password" or "SSH Key"
     - ssh_pass: password or key passphrase
     - ssh_key_path: path to private key
+    - sudo_pass: root/sudo elevation password
     """
     auth = data.get("auth_method", "Password")
     secret = data.get("ssh_pass") or None
     key_path = data.get("ssh_key_path") or None
+    sudo_pass = data.get("sudo_pass") or None
 
     if auth == "SSH Key":
         return SshCredentials(
             password=None,
             passphrase=secret,
             key_path=key_path,
+            sudo_password=sudo_pass,
         )
 
     return SshCredentials(
         password=secret,
         passphrase=None,
         key_path=None,
+        sudo_password=sudo_pass,
     )
 
 

@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import (
+    QAction,
     QColor,
     QFont,
     QKeySequence,
@@ -82,11 +83,14 @@ from admin_suite.ansible.playbook import AnsiblePlaybookTab
 from admin_suite.sysadmin.dashboard import SysAdminTab
 from admin_suite.web.tab import WebManagerTab
 from admin_suite.security.tab import SecurityHubTab
+from admin_suite.vapt.tab import VaptTab
 
 from admin_suite.vpn.service import VpnService
 
 from admin_suite.ui.toasts import Toast, NotificationCenterDialog
 from admin_suite.ui.palette import CommandPaletteDialog
+from admin_suite.ui.event_logs import EventLogsWidget
+from admin_suite.ui.welcome import WelcomeWidget
 
 from admin_suite.ui.dialogs import (
     ConnectionManagerDialog,
@@ -170,7 +174,12 @@ class MainWindow(QMainWindow):
         self.services = services
 
         self.setWindowTitle("Admin Suite")
+        from admin_suite.core.paths import get_app_icon
+        _icon = get_app_icon()
+        if _icon and not _icon.isNull():
+            self.setWindowIcon(_icon)
         self.resize(1440, 860)
+        self.setMinimumSize(1000, 600)
 
         self.profiles: dict[str, dict[str, Any]] = {}
         self.db_profiles: dict[str, dict[str, Any]] = {}
@@ -204,7 +213,6 @@ class MainWindow(QMainWindow):
         self.load_recent()
 
         # Signals.
-        self.services.debug.log_emitted.connect(self.append_debug)
         self.services.notifications.pushed.connect(self._on_notification)
 
         self.services.emit_log("system", "Admin Suite v5 started.")
@@ -223,34 +231,31 @@ class MainWindow(QMainWindow):
 
         if geo:
             self.restoreGeometry(geo)
+            if self.width() < 1000 or self.height() < 600:
+                self.resize(max(self.width(), 1280), max(self.height(), 760))
 
         try:
-            sidebar_visible = self._settings.value("sidebar/visible", True, type=bool)
+            # Always start application with left sidebar open as requested
+            sidebar_visible = True
             sidebar_width = self._settings.value("sidebar/width", 280, type=int)
 
-            self._sidebar_width = sidebar_width if sidebar_width > 0 else 280
+            self._sidebar_width = sidebar_width if (200 <= sidebar_width <= 500) else 280
+            self.sidebar.setVisible(True)
+            self.sidebar.setMinimumWidth(200)
+            self.sidebar.setMaximumWidth(520)
+            self.main_splitter.setCollapsible(0, False)
 
-            self.sidebar.setVisible(sidebar_visible)
-
-            if hasattr(self, "sidebar_toggle_btn"):
-                self.sidebar_toggle_btn.setText(
-                    "◀" if sidebar_visible else "▶"
-                )
-
-            copilot_visible = self._settings.value("copilot/visible", True, type=bool)
+            copilot_visible = self._settings.value("copilot/visible", False, type=bool)
             copilot_width = self._settings.value("copilot/width", 340, type=int)
-            self._copilot_width = copilot_width if copilot_width > 0 else 340
+            self._copilot_width = copilot_width if (240 <= copilot_width <= 500) else 340
 
-            if hasattr(self, "ai_tab"):
-                self.ai_tab.setVisible(copilot_visible)
-            self._update_copilot_btn_style(copilot_visible)
+            if hasattr(self, "right_sidebar"):
+                self.right_sidebar.setVisible(copilot_visible)
 
-            if hasattr(self, "main_splitter"):
-                total = max(self.main_splitter.width(), self.width(), 1440)
-                s_w = self._sidebar_width if sidebar_visible else 0
-                c_w = self._copilot_width if copilot_visible else 0
-                w_w = max(total - s_w - c_w, 600)
-                self.main_splitter.setSizes([s_w, w_w, c_w])
+            self._update_left_sidebar_btn_styles(True)
+            self._update_right_sidebar_btn_styles()
+
+            self._apply_splitter_layout()
 
         except Exception:
             pass
@@ -286,10 +291,11 @@ class MainWindow(QMainWindow):
         sidebar_layout.setSpacing(0)
 
         header = QLabel("  🛠 ADMIN SUITE v5")
+        header.setFixedHeight(46)
         header.setStyleSheet(
             f"background:{theme['win']};"
             f"color:{theme['accent']};"
-            "font-size:15px;font-weight:bold;padding:12px;letter-spacing:1px;"
+            "font-size:15px;font-weight:bold;padding:10px 12px;letter-spacing:1px;"
         )
 
         sidebar_layout.addWidget(header)
@@ -329,6 +335,7 @@ class MainWindow(QMainWindow):
 
         for text, tooltip, callback in (
             ("➕", "Add profile", self.add_profile),
+            ("📋", "Duplicate profile", self.duplicate_profile),
             ("✏️", "Edit profile", self.edit_profile),
             ("🗑️", "Delete profile", self.delete_profile),
             ("📡", "Ping all hosts", self._ping_all_profiles),
@@ -348,6 +355,11 @@ class MainWindow(QMainWindow):
         db_layout.setContentsMargins(4, 4, 4, 4)
         db_layout.setSpacing(4)
 
+        self.db_filter = QLineEdit()
+        self.db_filter.setPlaceholderText("🔍 Filter DB profiles / hosts...")
+        self.db_filter.textChanged.connect(self.refresh_db_list)
+        db_layout.addWidget(self.db_filter)
+
         self.db_list = QListWidget()
         self.db_list.itemDoubleClicked.connect(self.on_db_profile_activated)
 
@@ -365,6 +377,7 @@ class MainWindow(QMainWindow):
 
         for text, tooltip, callback in (
             ("➕", "Add DB profile", self.add_db_profile),
+            ("📋", "Duplicate DB profile", self.duplicate_db_profile),
             ("✏️", "Edit DB profile", self.edit_db_profile),
             ("🗑️", "Delete DB profile", self.delete_db_profile),
         ):
@@ -395,7 +408,11 @@ class MainWindow(QMainWindow):
         tools_layout.setSpacing(2)
 
         tool_buttons = [
+            ("🏠 Welcome Screen", self.open_welcome_tab),
+            ("🗄️ Database Manager", self.open_db_manager),
+            ("📋 Event Logs", self.toggle_event_logs),
             ("⚡ Local Shell", lambda: self.add_local_command_tab("bash", "Local Shell")),
+            ("🔍 VAPT & Web Security Audit", lambda: self.open_vapt_tab()),
             ("🛡️ Security Hub", self.open_security_hub_selected),
             ("🔌 Port Forwarding & Tunnels", lambda: self.open_port_forwarding()),
             ("🌐 Web Hosting Manager", self.open_web_manager_selected),
@@ -438,22 +455,43 @@ class MainWindow(QMainWindow):
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
 
-        # Copilot panel (Right sidebar)
+        # Right sidebar container (Copilot + Event Logs tabs)
+        self.right_sidebar = QWidget()
+        self.right_sidebar.setMinimumWidth(0)
+        self.right_sidebar.setStyleSheet(
+            f"background:{theme['panel']};"
+            f"border-left:1px solid {theme['border']};"
+        )
+        right_sidebar_layout = QVBoxLayout(self.right_sidebar)
+        right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        right_sidebar_layout.setSpacing(0)
+
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setDocumentMode(True)
+        self.right_tabs.setUsesScrollButtons(True)
+
         from admin_suite.ai.assistant_tab import AIAssistantTab
         self.ai_tab = AIAssistantTab(self.services, self)
-        self.ai_tab.setMinimumWidth(0)
-        self._copilot_width = 340
+        self.event_logs_widget = EventLogsWidget(self.services, self)
+
+        self.right_tabs.addTab(self.ai_tab, "🤖 Copilot")
+        self.right_tabs.addTab(self.event_logs_widget, "📋 Event Logs")
+        self.right_tabs.currentChanged.connect(self._on_right_tab_changed)
+
+        right_sidebar_layout.addWidget(self.right_tabs, 1)
+
+        self._copilot_width = 360
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.sidebar)
         self.main_splitter.addWidget(workspace)
-        self.main_splitter.addWidget(self.ai_tab)
+        self.main_splitter.addWidget(self.right_sidebar)
 
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
         self.main_splitter.setStretchFactor(2, 0)
         self.main_splitter.setChildrenCollapsible(True)
-        self.main_splitter.setSizes([280, 820, 340])
+        self.main_splitter.setSizes([280, 800, 360])
 
         main_layout.addWidget(self.main_splitter)
 
@@ -470,17 +508,9 @@ class MainWindow(QMainWindow):
         navbar_layout.setContentsMargins(8, 4, 8, 4)
         navbar_layout.setSpacing(6)
 
-        self.sidebar_toggle_btn = QToolButton()
-        self.sidebar_toggle_btn.setText("◀")
-        self.sidebar_toggle_btn.setToolTip("Toggle Sidebar (Ctrl+B)")
-
-        self.sidebar_toggle_btn.setStyleSheet(
-            f"background:{theme['panel2']};"
-            f"border:1px solid {theme['border']};"
-            "border-radius:4px;padding:4px 8px;"
-        )
-
-        self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
+        self.sidebar_toggle_btn = QPushButton("🗂️ Sidebar ◀")
+        self.sidebar_toggle_btn.setToolTip("Toggle Left Sidebar (Ctrl+B)")
+        self.sidebar_toggle_btn.clicked.connect(lambda: self.toggle_sidebar())
 
         palette_btn = QPushButton("⌘ (Ctrl+K)")
         palette_btn.clicked.connect(self.open_palette)
@@ -497,10 +527,16 @@ class MainWindow(QMainWindow):
         )
         self.vpn_btn.clicked.connect(self.vpn.toggle)
 
-        self.copilot_toggle_btn = QPushButton("🤖 Copilot ▶")
-        self.copilot_toggle_btn.setToolTip("Toggle AI Copilot Sidebar (Ctrl+Shift+A or Ctrl+I)")
-        self.copilot_toggle_btn.clicked.connect(self.toggle_copilot)
-        self._update_copilot_btn_style(True)
+        # Single right sidebar toggle button
+        self.right_sidebar_toggle_btn = QPushButton("🗂️ Right Sidebar ▶")
+        self.right_sidebar_toggle_btn.setToolTip("Toggle Right Sidebar (Copilot & Event Logs) (Ctrl+Shift+A)")
+        self.right_sidebar_toggle_btn.clicked.connect(lambda: self.toggle_right_sidebar())
+
+        # Compatibility references
+        self.copilot_toggle_btn = self.right_sidebar_toggle_btn
+        self.event_logs_btn = self.right_sidebar_toggle_btn
+
+        self._update_right_sidebar_btn_styles()
 
         self.vpn_status = QLabel("● VPN: Unknown")
         self.vpn_status.setStyleSheet(
@@ -511,7 +547,7 @@ class MainWindow(QMainWindow):
         navbar_layout.addWidget(palette_btn)
         navbar_layout.addWidget(self.broadcast_btn)
         navbar_layout.addWidget(self.vpn_btn)
-        navbar_layout.addWidget(self.copilot_toggle_btn)
+        navbar_layout.addWidget(self.right_sidebar_toggle_btn)
         navbar_layout.addStretch()
         navbar_layout.addWidget(self.vpn_status)
 
@@ -553,26 +589,25 @@ class MainWindow(QMainWindow):
 
         workspace_layout.addWidget(self.tabs, 1)
 
-        # Database manager.
-        self.db_manager_widget = DatabaseManagerWidget(self.services, self)
+        # Welcome screen (Starting tab)
+        self.welcome_widget = WelcomeWidget(self.services, self)
+        self.tabs.addTab(self.welcome_widget, "🏠 Welcome")
 
-        self.tabs.addTab(self.db_manager_widget, "🗄 Database Manager")
+        # Database manager (created on-demand, parented to tabs and hidden until opened)
+        self.db_manager_widget = DatabaseManagerWidget(self.services, self.tabs)
+        self.db_manager_widget.hide()
 
-        # Debug console.
-        self.debug_console = QTextEdit()
-        self.debug_console.setReadOnly(True)
-        self.debug_console.setFont(QFont("JetBrains Mono, Consolas", 9))
-        self.tabs.addTab(self.debug_console, "⚠️ Debug")
+        # Compatibility alias for debug console
+        self.debug_console = getattr(self.event_logs_widget, "console", None)
 
-        # Disable close buttons on permanent tabs
-        for tab_widget in (self.db_manager_widget, self.debug_console):
-            t_idx = self.tabs.indexOf(tab_widget)
-            if t_idx >= 0:
-                self.tabs.tabBar().setTabButton(
-                    t_idx,
-                    QTabBar.ButtonPosition.RightSide,
-                    None,
-                )
+        # Disable close button on Welcome permanent tab
+        w_idx = self.tabs.indexOf(self.welcome_widget)
+        if w_idx >= 0:
+            self.tabs.tabBar().setTabButton(
+                w_idx,
+                QTabBar.ButtonPosition.RightSide,
+                None,
+            )
 
         # MySQL status button inside DB manager toolbar.
         try:
@@ -587,9 +622,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Native Menu Bar
+        self._init_menu_bar()
+
         self.statusBar().showMessage(
             "Ready — double-click a profile · Ctrl+K palette · Ctrl+T terminal · "
-            "F8 broadcast · Ctrl+Shift+T reopen"
+            "Ctrl+Shift+V VAPT audit · F8 broadcast · Ctrl+Shift+T reopen"
         )
 
     def _init_shortcuts(self) -> None:
@@ -601,9 +639,12 @@ class MainWindow(QMainWindow):
             ("Ctrl+T", self._new_terminal_dialog),
             ("Ctrl+W", self._close_current_tab),
             ("Ctrl+B", self.toggle_sidebar),
-            ("Ctrl+Shift+A", self.toggle_copilot),
+            ("Ctrl+Shift+A", self.toggle_right_sidebar),
             ("Ctrl+I", self.toggle_copilot),
+            ("Ctrl+Shift+L", self.toggle_event_logs),
+            ("Ctrl+Shift+V", lambda: self.open_vapt_tab()),
             ("F8", self.toggle_broadcast),
+            ("F11", self._toggle_fullscreen),
             ("Ctrl+,", self.open_config),
             ("Ctrl+Shift+T", self._reopen_closed_tab),
         ):
@@ -611,6 +652,271 @@ class MainWindow(QMainWindow):
             shortcut.activated.connect(callback)
 
             self._sc.append(shortcut)
+
+    def _init_menu_bar(self) -> None:
+        menubar = self.menuBar()
+        menubar.clear()
+
+        # -------------------- File Menu --------------------
+        file_menu = menubar.addMenu("&File")
+
+        act_new_term = file_menu.addAction("➕ New Terminal Tab")
+        act_new_term.setShortcut("Ctrl+T")
+        act_new_term.triggered.connect(self._new_terminal_dialog)
+
+        act_local_shell = file_menu.addAction("⚡ New Local Shell")
+        act_local_shell.triggered.connect(lambda: self.add_local_command_tab("bash", "Local Shell"))
+
+        file_menu.addSeparator()
+
+        act_vapt = file_menu.addAction("🔍 VAPT & Web Security Audit")
+        act_vapt.setShortcut("Ctrl+Shift+V")
+        act_vapt.triggered.connect(lambda: self.open_vapt_tab())
+
+        act_db = file_menu.addAction("🗄️ Database Manager")
+        act_db.triggered.connect(self.open_db_manager)
+
+        act_sec = file_menu.addAction("🛡️ Security Hub")
+        act_sec.triggered.connect(self.open_security_hub_selected)
+
+        act_web = file_menu.addAction("🌐 Web Hosting Manager")
+        act_web.triggered.connect(self.open_web_manager_selected)
+
+        act_sys = file_menu.addAction("🖥 SysAdmin Dashboard")
+        act_sys.triggered.connect(self.open_sysadmin_selected)
+
+        act_ans = file_menu.addAction("📝 Ansible Multi-Host Runner")
+        act_ans.triggered.connect(self.open_ansible_tab)
+
+        act_play = file_menu.addAction("📜 Ansible Playbook Executor")
+        act_play.triggered.connect(self.open_ansible_playbook_tab)
+
+        file_menu.addSeparator()
+
+        act_import = file_menu.addAction("📥 Import ~/.ssh/config")
+        act_import.triggered.connect(self.import_ssh_config)
+
+        act_logs = file_menu.addAction("🎬 Session Recordings")
+        act_logs.triggered.connect(lambda: SessionLogViewerDialog(self, self.services).exec())
+
+        file_menu.addSeparator()
+
+        act_close_tab = file_menu.addAction("❌ Close Current Tab")
+        act_close_tab.setShortcut("Ctrl+W")
+        act_close_tab.triggered.connect(self._close_current_tab)
+
+        act_reopen_tab = file_menu.addAction("🔄 Reopen Closed Tab")
+        act_reopen_tab.setShortcut("Ctrl+Shift+T")
+        act_reopen_tab.triggered.connect(self._reopen_closed_tab)
+
+        file_menu.addSeparator()
+
+        act_exit = file_menu.addAction("🚪 Exit")
+        act_exit.setShortcut("Ctrl+Q")
+        act_exit.triggered.connect(self.close)
+
+        # -------------------- Edit Menu --------------------
+        edit_menu = menubar.addMenu("&Edit")
+
+        act_add_prof = edit_menu.addAction("➕ Add SSH Profile...")
+        act_add_prof.triggered.connect(self.add_profile)
+
+        act_add_db = edit_menu.addAction("➕ Add Database Profile...")
+        act_add_db.triggered.connect(self.add_db_profile)
+
+        edit_menu.addSeparator()
+
+        act_snip = edit_menu.addAction("📋 Manage Snippets...")
+        act_snip.triggered.connect(self.open_snippets)
+
+        act_keys = edit_menu.addAction("🔑 SSH Key Manager...")
+        act_keys.triggered.connect(lambda: KeyManagerDialog(self, self.services).exec())
+
+        edit_menu.addSeparator()
+
+        act_theme = edit_menu.addAction("🎨 Themes...")
+        act_theme.triggered.connect(self.open_theme_dialog)
+
+        act_pref = edit_menu.addAction("⚙️ Connection Settings...")
+        act_pref.setShortcut("Ctrl+,")
+        act_pref.triggered.connect(self.open_config)
+
+        # -------------------- View Menu --------------------
+        view_menu = menubar.addMenu("&View")
+
+        act_toggle_side = view_menu.addAction("🗂️ Toggle Left Sidebar")
+        act_toggle_side.setShortcut("Ctrl+B")
+        act_toggle_side.triggered.connect(self.toggle_sidebar)
+
+        act_toggle_copilot = view_menu.addAction("🤖 Toggle AI Copilot / Right Sidebar")
+        act_toggle_copilot.setShortcut("Ctrl+Shift+A")
+        act_toggle_copilot.triggered.connect(self.toggle_right_sidebar)
+
+        act_toggle_event = view_menu.addAction("📋 Toggle Event Logs")
+        act_toggle_event.setShortcut("Ctrl+Shift+L")
+        act_toggle_event.triggered.connect(self.toggle_event_logs)
+
+        act_welcome = view_menu.addAction("🏠 Welcome Screen")
+        act_welcome.triggered.connect(self.open_welcome_tab)
+
+        act_pal = view_menu.addAction("🔍 Command Palette...")
+        act_pal.setShortcut("Ctrl+K")
+        act_pal.triggered.connect(self.open_palette)
+
+        view_menu.addSeparator()
+
+        self.act_show_statusbar = view_menu.addAction("Show Status Bar")
+        self.act_show_statusbar.setCheckable(True)
+        self.act_show_statusbar.setChecked(True)
+        self.act_show_statusbar.toggled.connect(lambda visible: self.statusBar().setVisible(visible))
+
+        view_menu.addSeparator()
+
+        act_fullscreen = view_menu.addAction("⛶ Toggle Full Screen")
+        act_fullscreen.setShortcut("F11")
+        act_fullscreen.triggered.connect(self._toggle_fullscreen)
+
+        # -------------------- Tools & Security Menu --------------------
+        tools_menu = menubar.addMenu("&Tools")
+
+        act_tools_vapt = tools_menu.addAction("🔍 VAPT Web Security & Domain Audit")
+        act_tools_vapt.setShortcut("Ctrl+Shift+V")
+        act_tools_vapt.triggered.connect(lambda: self.open_vapt_tab())
+
+        act_tools_sec = tools_menu.addAction("🛡️ Security Hub (Firewall, Fail2ban, Malware)")
+        act_tools_sec.triggered.connect(self.open_security_hub_selected)
+
+        act_tools_web = tools_menu.addAction("🌐 Web & Virtual Host Manager")
+        act_tools_web.triggered.connect(self.open_web_manager_selected)
+
+        act_tools_sys = tools_menu.addAction("🖥 SysAdmin Dashboard")
+        act_tools_sys.triggered.connect(self.open_sysadmin_selected)
+
+        act_tools_db = tools_menu.addAction("🗄️ Database Manager")
+        act_tools_db.triggered.connect(self.open_db_manager)
+
+        act_tools_tunnel = tools_menu.addAction("🔌 Port Forwarding & SSH Tunnels")
+        act_tools_tunnel.triggered.connect(lambda: self.open_port_forwarding())
+
+        act_tools_ansible = tools_menu.addAction("📝 Ansible Multi-Host Runner")
+        act_tools_ansible.triggered.connect(self.open_ansible_tab)
+
+        act_tools_playbook = tools_menu.addAction("📜 Ansible Playbook Executor")
+        act_tools_playbook.triggered.connect(self.open_ansible_playbook_tab)
+
+        tools_menu.addSeparator()
+
+        act_vpn = tools_menu.addAction("⚡ Toggle VPN (WireGuard / OpenVPN)")
+        act_vpn.triggered.connect(self.vpn.toggle)
+
+        act_bcast = tools_menu.addAction("📢 Toggle Broadcast Mode")
+        act_bcast.setShortcut("F8")
+        act_bcast.triggered.connect(self.toggle_broadcast)
+
+        # -------------------- Window Menu --------------------
+        win_menu = menubar.addMenu("&Window")
+
+        act_next_tab = win_menu.addAction("➡️ Next Tab")
+        act_next_tab.setShortcut("Ctrl+Tab")
+        act_next_tab.triggered.connect(self._next_tab)
+
+        act_prev_tab = win_menu.addAction("⬅️ Previous Tab")
+        act_prev_tab.setShortcut("Ctrl+Shift+Tab")
+        act_prev_tab.triggered.connect(self._prev_tab)
+
+        win_menu.addSeparator()
+
+        act_close_others = win_menu.addAction("Close Other Tabs")
+        act_close_others.triggered.connect(self._close_other_tabs)
+
+        act_close_all = win_menu.addAction("Close All Tabs")
+        act_close_all.triggered.connect(self._close_all_tabs)
+
+        # -------------------- Help Menu --------------------
+        help_menu = menubar.addMenu("&Help")
+
+        act_help_pal = help_menu.addAction("🔍 Command Palette Guide")
+        act_help_pal.triggered.connect(self.open_palette)
+
+        act_help_notif = help_menu.addAction("🔔 Notification Center")
+        act_help_notif.triggered.connect(lambda: NotificationCenterDialog(self, self.services).exec())
+
+        act_help_keys = help_menu.addAction("📘 Keyboard Shortcuts Reference")
+        act_help_keys.triggered.connect(self._show_shortcuts_dialog)
+
+        help_menu.addSeparator()
+
+        act_about = help_menu.addAction("ℹ️ About Admin Suite")
+        act_about.triggered.connect(self._show_about_dialog)
+
+    def _next_tab(self) -> None:
+        idx = self.tabs.currentIndex()
+        if idx < self.tabs.count() - 1:
+            self.tabs.setCurrentIndex(idx + 1)
+        elif self.tabs.count() > 0:
+            self.tabs.setCurrentIndex(0)
+
+    def _prev_tab(self) -> None:
+        idx = self.tabs.currentIndex()
+        if idx > 0:
+            self.tabs.setCurrentIndex(idx - 1)
+        elif self.tabs.count() > 0:
+            self.tabs.setCurrentIndex(self.tabs.count() - 1)
+
+    def _close_other_tabs(self) -> None:
+        curr = self.tabs.currentIndex()
+        for idx in reversed(range(self.tabs.count())):
+            if idx != curr and self.tabs.widget(idx) != self.welcome_widget:
+                self.close_tab(idx)
+
+    def _close_all_tabs(self) -> None:
+        for idx in reversed(range(self.tabs.count())):
+            if self.tabs.widget(idx) != self.welcome_widget:
+                self.close_tab(idx)
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def _show_shortcuts_dialog(self) -> None:
+        text = (
+            "<b>Keyboard Shortcuts:</b><br><br>"
+            "• <b>Ctrl+T</b> — New Terminal<br>"
+            "• <b>Ctrl+W</b> — Close Current Tab<br>"
+            "• <b>Ctrl+Shift+T</b> — Reopen Closed Tab<br>"
+            "• <b>Ctrl+Shift+V</b> — Open VAPT & Web Security Audit<br>"
+            "• <b>Ctrl+K / Ctrl+Shift+P</b> — Command Palette<br>"
+            "• <b>Ctrl+B</b> — Toggle Left Sidebar<br>"
+            "• <b>Ctrl+Shift+A</b> — Toggle Copilot / Right Sidebar<br>"
+            "• <b>Ctrl+Shift+L</b> — Toggle Event Logs<br>"
+            "• <b>Ctrl+,</b> — Connection Settings<br>"
+            "• <b>F8</b> — Toggle Broadcast Mode<br>"
+            "• <b>F11</b> — Toggle Fullscreen<br>"
+            "• <b>Ctrl+Tab / Ctrl+Shift+Tab</b> — Switch Tabs<br>"
+        )
+        QMessageBox.information(self, "Keyboard Shortcuts", text)
+
+    def _show_about_dialog(self) -> None:
+        from admin_suite import __version__
+        text = (
+            f"<h2>Admin Suite v{__version__}</h2>"
+            "<p>A comprehensive multi-platform Linux Administration, Remote Server Management, "
+            "Database Administration, VAPT Web Security Auditing, and Automation Suite.</p>"
+            "<p><b>Features:</b></p>"
+            "<ul>"
+            "<li>SSH Terminal & Local Shell with Broadcast Mode</li>"
+            "<li>VAPT Web Application & Domain Security Auditor</li>"
+            "<li>Unified Security Hub (Firewall, Fail2ban, Rootkits, SSL)</li>"
+            "<li>Database Manager (MySQL, PostgreSQL, SQLite)</li>"
+            "<li>Web Hosting & Virtual Host Management</li>"
+            "<li>SysAdmin Realtime Monitoring</li>"
+            "<li>Ansible Multi-Host & Playbook Automation</li>"
+            "<li>SFTP File Manager & SSH Tunnels</li>"
+            "</ul>"
+        )
+        QMessageBox.about(self, "About Admin Suite", text)
 
     # ------------------------------------------------------------
     # Notifications/debug
@@ -630,27 +936,8 @@ class MainWindow(QMainWindow):
         )
 
     def append_debug(self, text: str) -> None:
-        try:
-            doc = self.debug_console.document()
-
-            if doc.blockCount() > 5000:
-                cursor = QTextCursor(doc)
-                cursor.movePosition(QTextCursor.MoveOperation.Start)
-
-                for _ in range(1000):
-                    cursor.movePosition(
-                        QTextCursor.MoveOperation.Down,
-                        QTextCursor.MoveMode.KeepAnchor,
-                    )
-
-                cursor.removeSelectedText()
-                cursor.deleteChar()
-
-        except Exception:
-            pass
-
-        self.debug_console.append(text)
-        self.debug_console.moveCursor(QTextCursor.MoveOperation.End)
+        """Compatibility helper to append or emit debug text."""
+        self.services.events.info("SYSTEM", text)
 
     def _notify(self, msg: str, timeout: int = 4000) -> None:
         self.statusBar().showMessage(msg, timeout)
@@ -786,6 +1073,7 @@ class MainWindow(QMainWindow):
 
         if connected:
             self.services.notifications.push("ok", "VPN", "Connected")
+            self.services.audit("VPN", "VPN connection established")
         else:
             msg = (
                 res.get("err", "").strip()
@@ -794,6 +1082,7 @@ class MainWindow(QMainWindow):
             )[:300]
 
             self.services.notifications.push("error", "VPN", msg)
+            self.services.emit_log("VPN", f"VPN connection failed: {msg}", "ERROR")
 
     def _finish_vpn_disconnect(self, res: dict) -> None:
         if res.get("error"):
@@ -821,6 +1110,7 @@ class MainWindow(QMainWindow):
 
         if not connected:
             self.services.notifications.push("info", "VPN", "Disconnected")
+            self.services.audit("VPN", "VPN disconnected")
         else:
             msg = (
                 res.get("err", "").strip()
@@ -829,6 +1119,7 @@ class MainWindow(QMainWindow):
             )[:300]
 
             self.services.notifications.push("error", "VPN", msg)
+            self.services.emit_log("VPN", f"VPN disconnect failed: {msg}", "ERROR")
 
     # ------------------------------------------------------------
     # Profiles
@@ -837,16 +1128,39 @@ class MainWindow(QMainWindow):
     def load_profiles(self) -> None:
         self.profiles = read_json(PROFILES_FILE, {}) or {}
 
+        # Ensure a default localhost profile is present for local administration
+        if "localhost" not in self.profiles and "Localhost" not in self.profiles:
+            import getpass
+            current_user = getpass.getuser()
+            self.profiles["localhost"] = {
+                "name": "localhost",
+                "group": "Local System",
+                "tags": "localhost, system",
+                "favorite": True,
+                "ssh_host": "127.0.0.1",
+                "ssh_user": current_user,
+                "ssh_port": "22",
+                "auth_method": "Password",
+                "is_local": True,
+                "use_local_exec": True,
+            }
+
         for name, data in self.profiles.items():
             ssh_pass = self.services.secrets.get(f"prof_{name}", "")
-
             if ssh_pass:
                 data["ssh_pass"] = ssh_pass
 
             jump_pass = self.services.secrets.get(f"prof_jump_{name}", "")
-
             if jump_pass:
                 data["jump_pass"] = jump_pass
+
+            sudo_pass = self.services.secrets.get(f"prof_sudo_{name}", "")
+            if sudo_pass:
+                data["sudo_pass"] = sudo_pass
+                self.services.set_sudo_password(name, sudo_pass)
+                if name.lower() == "localhost":
+                    self.services.set_sudo_password("Localhost", sudo_pass)
+                    self.services.set_sudo_password("localhost", sudo_pass)
 
         self.refresh_profile_tree()
 
@@ -858,15 +1172,21 @@ class MainWindow(QMainWindow):
 
             ssh_pass = c.pop("ssh_pass", "") or ""
             jump_pass = c.pop("jump_pass", "") or ""
+            sudo_pass = c.pop("sudo_pass", "") or ""
 
             self.services.secrets.set(f"prof_{name}", ssh_pass)
             self.services.secrets.set(f"prof_jump_{name}", jump_pass)
+            if sudo_pass:
+                self.services.secrets.set(f"prof_sudo_{name}", sudo_pass)
 
             clean[name] = c
 
         write_json_secure(PROFILES_FILE, clean)
+        if hasattr(self, "welcome_widget"):
+            self.welcome_widget.refresh_stats()
 
     def refresh_profile_tree(self, *args) -> None:
+        import getpass
         self.profile_tree.clear()
 
         theme = self.services.theme.current
@@ -883,6 +1203,10 @@ class MainWindow(QMainWindow):
                 + data.get("tags", "")
                 + " "
                 + data.get("group", "")
+                + " "
+                + str(data.get("ssh_host", ""))
+                + " "
+                + str(data.get("ssh_user", ""))
             ).lower()
 
             if filt and filt not in haystack:
@@ -897,7 +1221,7 @@ class MainWindow(QMainWindow):
             ).append((name, data))
 
         def add_group(group_name, items, icon="📁"):
-            group_item = QTreeWidgetItem([f"{icon} {group_name}"])
+            group_item = QTreeWidgetItem([f"{icon} {group_name} ({len(items)})"])
             group_item.setForeground(0, QColor(theme["accent"]))
 
             font = group_item.font(0)
@@ -905,23 +1229,55 @@ class MainWindow(QMainWindow):
             group_item.setFont(0, font)
 
             for name, data in sorted(items, key=lambda x: x[0].lower()):
-                status = self._profile_status.get(name, "unknown")
+                is_local = (
+                    bool(data.get("is_local"))
+                    or name.lower() == "localhost"
+                    or (
+                        data.get("ssh_host") in ("localhost", "127.0.0.1")
+                        and bool(data.get("use_local_exec", True))
+                    )
+                )
 
-                dot = {
-                    "ok": "🟢",
-                    "fail": "🔴",
-                }.get(status, "⚪")
+                user = data.get("ssh_user") or (getpass.getuser() if is_local else "")
+                host = data.get("ssh_host", "127.0.0.1" if is_local else "")
+                port = str(data.get("ssh_port", "22"))
 
-                child = QTreeWidgetItem([f"{dot} {name}"])
+                if is_local:
+                    status = "ok"
+                    dot = "💻"
+                    host_info = f"{user}@localhost"
+                    jump_info = ""
+                else:
+                    status = self._profile_status.get(name, "unknown")
+                    dot = {
+                        "ok": "🟢",
+                        "fail": "🔴",
+                    }.get(status, "⚪")
+                    host_info = f"{user}@{host}:{port}"
+                    jump_info = ""
+                    if data.get("use_jump"):
+                        j_target = data.get("jump_profile") or data.get("jump_host") or "bastion"
+                        jump_info = f"  🔀 {j_target}"
+
+                fav_star = " ⭐" if data.get("favorite") else ""
+                child = QTreeWidgetItem([f"{dot} {name}  [{host_info}]{jump_info}{fav_star}"])
                 child.setData(0, Qt.ItemDataRole.UserRole, name)
+
+                auth_type = "Local Shell" if is_local else data.get("auth_method", "Password")
+                jump_desc = (data.get("jump_profile") or data.get("jump_host")) if data.get("use_jump") else "Direct"
+                has_sudo = bool(data.get("sudo_pass") or self.services.get_sudo_password(name))
+                sudo_desc = "Configured" if has_sudo else ("root user" if user == "root" else "Prompts as needed")
 
                 child.setToolTip(
                     0,
-                    f"{data.get('ssh_user', '')}@"
-                    f"{data.get('ssh_host', '')}:"
-                    f"{data.get('ssh_port', '22')}\n"
+                    f"Profile: {name}\n"
+                    f"Target: {host_info}\n"
+                    f"Auth: {auth_type}\n"
+                    f"Jump Route: {jump_desc}\n"
+                    f"Elevation: {sudo_desc}\n"
                     f"Status: {status}\n"
-                    f"Tags: {data.get('tags', '')}",
+                    f"Tags: {data.get('tags', '')}\n"
+                    f"Group: {data.get('group', 'Default')}",
                 )
 
                 group_item.addChild(child)
@@ -959,6 +1315,60 @@ class MainWindow(QMainWindow):
                 "Profile added",
                 data["name"],
             )
+    def duplicate_profile(self) -> None:
+        name = self._get_selected_profile_name()
+
+        if not name:
+            QMessageBox.information(self, "Duplicate", "Select a profile to duplicate.")
+            return
+
+        orig_data = self.profiles.get(name)
+        if not orig_data:
+            return
+
+        data = dict(orig_data)
+        base_name = f"{name} (Copy)"
+        dup_name = base_name
+        counter = 2
+        while dup_name in self.profiles:
+            dup_name = f"{name} (Copy {counter})"
+            counter += 1
+
+        data["name"] = dup_name
+
+        # Ensure passwords from secrets are carried over
+        ssh_pass = self.services.secrets.get(f"prof_{name}", "") or data.get("ssh_pass", "")
+        jump_pass = self.services.secrets.get(f"prof_jump_{name}", "") or data.get("jump_pass", "")
+        sudo_pass = self.services.secrets.get(f"prof_sudo_{name}", "") or data.get("sudo_pass", "")
+
+        if ssh_pass:
+            data["ssh_pass"] = ssh_pass
+        if jump_pass:
+            data["jump_pass"] = jump_pass
+        if sudo_pass:
+            data["sudo_pass"] = sudo_pass
+
+        dialog = ProfileDialog(self, self.services, edit_data=data)
+        dialog.setWindowTitle(f"Duplicate Profile — {name}")
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_data = dialog.get_data()
+            new_name = new_data["name"]
+
+            if new_name in self.profiles:
+                QMessageBox.warning(self, "Duplicate", f"Profile '{new_name}' already exists.")
+                return
+
+            self.profiles[new_name] = new_data
+            self.save_profiles()
+            self.refresh_profile_tree()
+
+            self.services.notifications.push(
+                "ok",
+                "Profile duplicated",
+                f"Cloned '{name}' to '{new_name}'",
+            )
+            self.services.audit("SSH", f"Duplicated profile '{name}' to '{new_name}'")
 
     def edit_profile(self) -> None:
         name = self._get_selected_profile_name()
@@ -997,6 +1407,7 @@ class MainWindow(QMainWindow):
             "Profile updated",
             new["name"],
         )
+        self.services.audit("SSH", f"Updated profile '{new['name']}'")
 
     def delete_profile(self) -> None:
         name = self._get_selected_profile_name()
@@ -1026,6 +1437,7 @@ class MainWindow(QMainWindow):
             "Profile deleted",
             name,
         )
+        self.services.audit("SSH", f"Deleted profile '{name}'")
 
     def _get_selected_profile_name(self) -> Optional[str]:
         item = self.profile_tree.currentItem()
@@ -1085,6 +1497,9 @@ class MainWindow(QMainWindow):
 
             menu.addSeparator()
 
+            menu.addAction("📋 Duplicate Profile").triggered.connect(
+                self.duplicate_profile
+            )
             menu.addAction("✏️ Edit").triggered.connect(self.edit_profile)
             menu.addAction("🗑 Delete").triggered.connect(self.delete_profile)
 
@@ -1250,28 +1665,115 @@ class MainWindow(QMainWindow):
             clean[name] = c
 
         write_json_secure(DB_PROFILES_FILE, clean)
+        if hasattr(self, "welcome_widget"):
+            self.welcome_widget.refresh_stats()
 
     def refresh_db_list(self) -> None:
         self.db_list.clear()
 
+        filt = self.db_filter.text().lower() if hasattr(self, "db_filter") else ""
+
         for name, data in sorted(self.db_profiles.items()):
-            item = QListWidgetItem(
-                f"🗄 {name}  [{data.get('backend', 'mysql')}]"
-            )
+            backend = str(data.get("backend", "mysql")).lower()
+            db_host = data.get("db_host", "")
+            db_port = data.get("db_port", "")
+            db_user = data.get("db_user", "")
+            db_name = data.get("db_name", "")
+            sqlite_path = data.get("sqlite_path", "")
 
+            haystack = f"{name} {backend} {db_host} {db_user} {db_name} {sqlite_path}".lower()
+            if filt and filt not in haystack:
+                continue
+
+            icon = {
+                "mysql": "🐬",
+                "postgresql": "🐘",
+                "postgres": "🐘",
+                "sqlite": "📁",
+            }.get(backend, "🗄️")
+
+            tunnel_badge = ""
+            if data.get("use_tunnel"):
+                prof = data.get("ssh_profile") or "SSH"
+                tunnel_badge = f"  🔀 {prof}"
+
+            if backend == "sqlite":
+                filename = os.path.basename(sqlite_path) or sqlite_path or "unnamed.db"
+                item_text = f"{icon} {name}  [SQLite • {filename}]"
+                tooltip = f"DB Profile: {name}\nBackend: SQLite\nPath: {sqlite_path}"
+            else:
+                target = f"{db_user}@{db_host}:{db_port}" if db_user else f"{db_host}:{db_port}"
+                if db_name:
+                    target += f"/{db_name}"
+                item_text = f"{icon} {name}  [{target}]{tunnel_badge}"
+                tooltip = (
+                    f"DB Profile: {name}\n"
+                    f"Backend: {backend.upper()}\n"
+                    f"Host: {db_host}:{db_port}\n"
+                    f"User: {db_user}\n"
+                    f"Database: {db_name or '(default)'}\n"
+                    f"SSH Tunnel: {'Enabled (' + (data.get('ssh_profile') or 'Custom') + ')' if data.get('use_tunnel') else 'Direct'}"
+                )
+
+            item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, name)
-
-            item.setToolTip(
-                f"{data.get('db_user', '')}@"
-                f"{data.get('db_host', '')}:{data.get('db_port', '')}"
-            )
-
+            item.setToolTip(tooltip)
             self.db_list.addItem(item)
 
     def _get_selected_db_profile_name(self) -> Optional[str]:
         item = self.db_list.currentItem()
 
         return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def duplicate_db_profile(self) -> None:
+        name = self._get_selected_db_profile_name()
+
+        if not name:
+            QMessageBox.information(self, "Duplicate", "Select a DB profile to duplicate.")
+            return
+
+        orig_data = self.db_profiles.get(name)
+        if not orig_data:
+            return
+
+        data = dict(orig_data)
+        base_name = f"{name} (Copy)"
+        dup_name = base_name
+        counter = 2
+        while dup_name in self.db_profiles:
+            dup_name = f"{name} (Copy {counter})"
+            counter += 1
+
+        data["name"] = dup_name
+
+        db_pass = self.services.secrets.get(f"dbprof_{name}", "") or data.get("db_pass", "")
+        ssh_pass = self.services.secrets.get(f"dbprof_ssh_{name}", "") or data.get("ssh_pass", "")
+        if db_pass:
+            data["db_pass"] = db_pass
+        if ssh_pass:
+            data["ssh_pass"] = ssh_pass
+
+        dialog = DbProfileDialog(self, self.services, edit_data=data)
+        dialog.setWindowTitle(f"Duplicate DB Profile — {name}")
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_data = dialog.get_data()
+            new_name = new_data["name"]
+
+            if new_name in self.db_profiles:
+                QMessageBox.warning(self, "Duplicate", f"DB profile '{new_name}' already exists.")
+                return
+
+            self.db_profiles[new_name] = new_data
+            self.save_db_profiles()
+            self.refresh_db_list()
+
+            self.services.notifications.push(
+                "ok",
+                "DB Profile Duplicated",
+                f"Cloned '{name}' to '{new_name}'",
+            )
+            self.services.audit("DB", f"Duplicated DB profile '{name}' to '{new_name}'")
 
     def add_db_profile(self) -> None:
         dialog = DbProfileDialog(self, self.services)
@@ -1297,6 +1799,7 @@ class MainWindow(QMainWindow):
                 "DB profile added",
                 data["name"],
             )
+            self.services.audit("DB", f"Added DB profile '{data['name']}' ({data.get('backend', 'mysql')})")
 
     def edit_db_profile(self) -> None:
         name = self._get_selected_db_profile_name()
@@ -1329,6 +1832,7 @@ class MainWindow(QMainWindow):
 
         self.save_db_profiles()
         self.refresh_db_list()
+        self.services.audit("DB", f"Updated DB profile '{new['name']}' ({new.get('backend', 'mysql')})")
 
     def delete_db_profile(self) -> None:
         name = self._get_selected_db_profile_name()
@@ -1352,6 +1856,7 @@ class MainWindow(QMainWindow):
 
         self.save_db_profiles()
         self.refresh_db_list()
+        self.services.audit("DB", f"Deleted DB profile '{name}'")
 
     def show_db_menu(self, pos) -> None:
         item = self.db_list.itemAt(pos)
@@ -1367,6 +1872,11 @@ class MainWindow(QMainWindow):
                 lambda: self.activate_db_profile(name)
             )
 
+            menu.addSeparator()
+
+            menu.addAction("📋 Duplicate Profile").triggered.connect(
+                self.duplicate_db_profile
+            )
             menu.addAction("✏️ Edit").triggered.connect(self.edit_db_profile)
             menu.addAction("🗑 Delete").triggered.connect(self.delete_db_profile)
 
@@ -1383,6 +1893,25 @@ class MainWindow(QMainWindow):
         if name:
             self.activate_db_profile(name)
 
+    def open_db_manager(self) -> DatabaseManagerWidget:
+        if self.tabs.indexOf(self.db_manager_widget) == -1:
+            self.tabs.addTab(self.db_manager_widget, "🗄 Database Manager")
+        self.tabs.setCurrentWidget(self.db_manager_widget)
+        self.db_manager_widget.show()
+        return self.db_manager_widget
+
+    def open_welcome_tab(self) -> WelcomeWidget:
+        idx = self.tabs.indexOf(self.welcome_widget)
+        if idx == -1:
+            idx = self.tabs.insertTab(0, self.welcome_widget, "🏠 Welcome")
+            self.tabs.tabBar().setTabButton(
+                idx,
+                QTabBar.ButtonPosition.RightSide,
+                None,
+            )
+        self.tabs.setCurrentIndex(idx)
+        return self.welcome_widget
+
     def activate_db_profile(self, name: str) -> None:
         data = self.db_profiles.get(name)
 
@@ -1391,13 +1920,16 @@ class MainWindow(QMainWindow):
 
         profile = dict(data)
 
+        self.open_db_manager()
         self.db_manager_widget.set_active_profile(profile)
-
-        self.tabs.setCurrentWidget(self.db_manager_widget)
-
         self.db_manager_widget.load_schemas()
 
         self._notify(f"Database profile activated: {name}")
+        self.services.emit_log(
+            "DB",
+            f"Database profile activated: {name} ({profile.get('backend', 'mysql')})",
+            "INFO",
+        )
 
     # ------------------------------------------------------------
     # Recent
@@ -1424,6 +1956,9 @@ class MainWindow(QMainWindow):
         for name in self.recent_connections:
             if name in self.profiles:
                 self.recent_list.addItem(name)
+
+        if hasattr(self, "welcome_widget"):
+            self.welcome_widget.refresh_recent()
 
     def on_recent_activated(self, item: QListWidgetItem) -> None:
         if item.text() in self.profiles:
@@ -1516,6 +2051,11 @@ class MainWindow(QMainWindow):
                 "Terminals are independent again",
             )
 
+        self.services.audit(
+            "TERMINAL",
+            f"Terminal broadcast input {'ENABLED' if self.broadcast_enabled else 'DISABLED'}",
+        )
+
     def add_terminal_tab(
         self,
         name: str,
@@ -1567,14 +2107,52 @@ class MainWindow(QMainWindow):
         if not data:
             return
 
+        is_local = (
+            bool(data.get("is_local"))
+            or name.lower() == "localhost"
+            or (
+                data.get("ssh_host") in ("127.0.0.1", "localhost")
+                and bool(data.get("use_local_exec", True))
+            )
+        )
+
+        if is_local:
+            import os
+            self.services.audit("TERMINAL", f"Opened local terminal for '{name}'")
+            cmd = data.get("initial_cmd") or os.environ.get("SHELL", "/bin/bash")
+            self.add_local_command_tab(command=cmd, name=name)
+            self.add_recent(name)
+            self._notify(f"Terminal (Local): {name}")
+            return
+
+        self.services.audit("SSH", f"Connecting SSH terminal for '{name}' ({data.get('ssh_user')}@{data.get('ssh_host')}:{data.get('ssh_port', 22)})")
+
         creds = profile_creds(data)
 
         jump_creds = None
+        jump_host = data.get("jump_host")
+        jump_port = int(data.get("jump_port", 22) or 22)
+        jump_user = data.get("jump_user")
 
         if data.get("use_jump"):
-            jump_creds = SshCredentials(
-                password=data.get("jump_pass") or None
-            )
+            jump_prof = data.get("jump_profile")
+            if jump_prof and jump_prof in self.profiles:
+                jp = self.profiles[jump_prof]
+                if not jump_host:
+                    jump_host = jp.get("ssh_host")
+                    jump_port = int(jp.get("ssh_port", 22) or 22)
+                    jump_user = jp.get("ssh_user")
+                j_creds = profile_creds(jp)
+                jump_creds = SshCredentials(
+                    password=data.get("jump_pass") or j_creds.password,
+                    passphrase=j_creds.passphrase,
+                    key_path=data.get("jump_key_path") or j_creds.key_path,
+                )
+            else:
+                jump_creds = SshCredentials(
+                    password=data.get("jump_pass") or None,
+                    key_path=data.get("jump_key_path") or None,
+                )
 
         self.add_terminal_tab(
             name,
@@ -1584,9 +2162,9 @@ class MainWindow(QMainWindow):
             creds,
             initial_cmd=data.get("initial_cmd", ""),
             use_jump=data.get("use_jump", False),
-            jump_host=data.get("jump_host"),
-            jump_port=int(data.get("jump_port", 22) or 22),
-            jump_user=data.get("jump_user"),
+            jump_host=jump_host,
+            jump_port=jump_port,
+            jump_user=jump_user,
             jump_creds=jump_creds,
             use_agent=data.get("use_agent", False),
             profile_name=name,
@@ -1602,6 +2180,7 @@ class MainWindow(QMainWindow):
         *,
         use_agent: bool = False,
     ):
+        self.services.audit("SFTP", f"Opening SFTP session for '{name}' ({user}@{host}:{port})")
         tab = SFTPTab(
             self.services,
             main_window=self,
@@ -1640,6 +2219,7 @@ class MainWindow(QMainWindow):
         )
 
     def add_local_command_tab(self, command: str, name: str = "Local"):
+        self.services.emit_log("TERMINAL", f"Spawned local command terminal: {command} ({name})", "INFO")
         tab = LocalTerminalTab(
             self.services,
             command=command,
@@ -1654,6 +2234,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def open_ansible_tab(self):
+        self.services.emit_log("ANSIBLE", "Opened Ansible Multi-Host runner tab", "INFO")
         tab = AnsibleTab(self.services, self)
 
         index = self.tabs.addTab(tab, "🚀 Ansible Runner")
@@ -1662,6 +2243,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def open_ansible_playbook_tab(self):
+        self.services.emit_log("ANSIBLE", "Opened Ansible Playbook runner tab", "INFO")
         tab = AnsiblePlaybookTab(self.services, self)
 
         index = self.tabs.addTab(tab, "📜 Ansible Playbook")
@@ -1670,6 +2252,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def open_sysadmin(self, name: str):
+        self.services.emit_log("SYSADMIN", f"Opened SysAdmin dashboard for: {name}", "INFO")
         data = self.profiles.get(name)
 
         tab = SysAdminTab(
@@ -1685,10 +2268,11 @@ class MainWindow(QMainWindow):
         return tab
 
     def open_sysadmin_local(self):
+        local_data = self.profiles.get("localhost") or self.profiles.get("Localhost")
         tab = SysAdminTab(
             self.services,
             "Localhost",
-            None,
+            local_data,
             self,
         )
 
@@ -1706,6 +2290,7 @@ class MainWindow(QMainWindow):
             self.open_sysadmin_local()
 
     def open_web_manager(self, name: str):
+        self.services.emit_log("WEB", f"Opened Web Hosting Manager for: {name}", "INFO")
         data = self.profiles.get(name)
         tab = WebManagerTab(
             self.services,
@@ -1718,10 +2303,12 @@ class MainWindow(QMainWindow):
         return tab
 
     def open_web_manager_local(self):
+        self.services.emit_log("WEB", "Opened Web Hosting Manager for Localhost", "INFO")
+        local_data = self.profiles.get("localhost") or self.profiles.get("Localhost")
         tab = WebManagerTab(
             self.services,
             "Localhost",
-            None,
+            local_data,
             self,
         )
         index = self.tabs.addTab(tab, "🌐 Localhost")
@@ -1736,6 +2323,7 @@ class MainWindow(QMainWindow):
             self.open_web_manager_local()
 
     def open_security_hub(self, name: str):
+        self.services.emit_log("SECURITY", f"Opened Security Hub for: {name}", "INFO")
         data = self.profiles.get(name)
         tab = SecurityHubTab(
             self.services,
@@ -1748,10 +2336,12 @@ class MainWindow(QMainWindow):
         return tab
 
     def open_security_hub_local(self):
+        self.services.emit_log("SECURITY", "Opened Security Hub for Localhost", "INFO")
+        local_data = self.profiles.get("localhost") or self.profiles.get("Localhost")
         tab = SecurityHubTab(
             self.services,
             "Localhost",
-            None,
+            local_data,
             self,
         )
         index = self.tabs.addTab(tab, "🛡️ Localhost")
@@ -1765,7 +2355,23 @@ class MainWindow(QMainWindow):
         else:
             self.open_security_hub_local()
 
+    def open_vapt_tab(self, target: str = "") -> VaptTab:
+        if not target:
+            name = self._get_selected_profile_name()
+            if name and name in self.profiles:
+                p = self.profiles[name]
+                host = p.get("ssh_host") or p.get("host") or ""
+                if host and host not in ("localhost", "127.0.0.1"):
+                    target = host
+        self.services.emit_log("VAPT", f"Opened VAPT & Web Security Audit tab (Target: {target or 'New'})", "INFO")
+        tab = VaptTab(self.services, initial_target=target, parent=self)
+        title = f"🔍 VAPT: {target}" if target else "🔍 VAPT Audit"
+        index = self.tabs.addTab(tab, title)
+        self.tabs.setCurrentIndex(index)
+        return tab
+
     def open_port_forwarding(self, profile_name: Optional[str] = None):
+        self.services.audit("SSH", f"Opened port forwarding & tunnels dialog")
         if not profile_name:
             profile_name = self._get_selected_profile_name()
 
@@ -1862,7 +2468,13 @@ class MainWindow(QMainWindow):
         elif isinstance(widget, SplitTerminalTab) and widget.terminals:
             QTimer.singleShot(50, widget.terminals[-1].force_focus)
 
-        if hasattr(self, "ai_tab") and self.ai_tab.isVisible():
+        if (
+            hasattr(self, "ai_tab")
+            and hasattr(self, "right_sidebar")
+            and self.right_sidebar.isVisible()
+            and hasattr(self, "right_tabs")
+            and self.right_tabs.currentWidget() == self.ai_tab
+        ):
             self.ai_tab.update_context()
 
     # ------------------------------------------------------------
@@ -1871,15 +2483,18 @@ class MainWindow(QMainWindow):
 
     def _is_permanent_tab(self, widget) -> bool:
         permanent = (
-            getattr(self, "db_manager_widget", None),
-            getattr(self, "ai_tab", None),
-            getattr(self, "debug_console", None),
+            getattr(self, "welcome_widget", None),
         )
         return widget is not None and widget in permanent
 
     def close_tab(self, index: int) -> None:
         widget = self.tabs.widget(index)
         if self._is_permanent_tab(widget):
+            return
+
+        if widget == getattr(self, "db_manager_widget", None):
+            self.tabs.removeTab(index)
+            widget.hide()
             return
 
         if isinstance(widget, SshTerminalTab):
@@ -1922,8 +2537,7 @@ class MainWindow(QMainWindow):
 
     def _close_current_tab(self):
         index = self.tabs.currentIndex()
-
-        if index >= 2:
+        if index >= 0 and not self._is_permanent_tab(self.tabs.widget(index)):
             self.close_tab(index)
 
     def _reopen_closed_tab(self):
@@ -1936,8 +2550,7 @@ class MainWindow(QMainWindow):
 
     def show_tab_menu(self, pos) -> None:
         index = self.tabs.tabBar().tabAt(pos)
-
-        if index <= 1:
+        if index < 0 or self._is_permanent_tab(self.tabs.widget(index)):
             return
 
         menu = QMenu(self)
@@ -1988,109 +2601,245 @@ class MainWindow(QMainWindow):
     # Sidebar
     # ------------------------------------------------------------
 
-    def toggle_sidebar(self) -> None:
+    def _apply_splitter_layout(self) -> None:
+        """
+        Synchronizes QSplitter sizes cleanly based on sidebar visibilities.
+        Prevents dead zones and ensures smooth transitions.
+        """
+        if not hasattr(self, "main_splitter"):
+            return
+
+        total = self.main_splitter.width()
+        if total <= 100:
+            total = max(self.width(), 1280)
+
+        left_open = hasattr(self, "sidebar") and not self.sidebar.isHidden()
+        right_open = hasattr(self, "right_sidebar") and not self.right_sidebar.isHidden()
+
+        # Enforce actual minimum sizes so QSplitter cannot collapse an open widget
+        if left_open:
+            s_w = getattr(self, "_sidebar_width", 280)
+            if s_w < 200 or s_w > 480:
+                s_w = 280
+            self.sidebar.setMinimumWidth(200)
+            self.sidebar.setMaximumWidth(520)
+            self.main_splitter.setCollapsible(0, False)
+        else:
+            s_w = 0
+            self.sidebar.setMinimumWidth(0)
+            self.main_splitter.setCollapsible(0, True)
+
+        if right_open:
+            r_w = getattr(self, "_copilot_width", 340)
+            if r_w < 240 or r_w > 480:
+                r_w = 340
+            self.right_sidebar.setMinimumWidth(240)
+            self.right_sidebar.setMaximumWidth(600)
+            self.main_splitter.setCollapsible(2, False)
+        else:
+            r_w = 0
+            self.right_sidebar.setMinimumWidth(0)
+            self.main_splitter.setCollapsible(2, True)
+
+        # Distribute remaining width to central workspace
+        w_w = max(total - s_w - r_w, 400)
+
+        # In case total width is cramped, proportionately share space
+        needed = s_w + w_w + r_w
+        if needed > total and total > 600:
+            w_w = max(int(total * 0.5), 350)
+            rem = total - w_w
+            if left_open and right_open:
+                s_w = int(rem * 0.45)
+                r_w = rem - s_w
+            elif left_open:
+                s_w = rem
+            elif right_open:
+                r_w = rem
+
+        self.main_splitter.setSizes([s_w, w_w, r_w])
+
+    def _update_left_sidebar_btn_styles(self, is_open: bool) -> None:
+        theme = self.services.theme.current
+        if hasattr(self, "sidebar_toggle_btn"):
+            if is_open:
+                self.sidebar_toggle_btn.setText("🗂️ Sidebar ◀")
+                self.sidebar_toggle_btn.setStyleSheet(
+                    f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
+                )
+            else:
+                self.sidebar_toggle_btn.setText("🗂️ Sidebar ▶")
+                self.sidebar_toggle_btn.setStyleSheet(
+                    f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
+                )
+
+    def toggle_sidebar(self, force_visible: Optional[bool] = None) -> None:
         if not hasattr(self, "sidebar"):
             return
 
-        visible = not self.sidebar.isVisible()
+        is_open = not self.sidebar.isHidden() and (self.sidebar.width() > 50)
+        target = not is_open if force_visible is None else bool(force_visible)
 
-        if visible:
+        if target:
+            w = getattr(self, "_sidebar_width", 260)
+            if w < 200 or w > 480:
+                w = 260
+            self._sidebar_width = w
+            self.sidebar.setMinimumWidth(200)
+            self.sidebar.setMaximumWidth(520)
             self.sidebar.show()
-
-            width = getattr(self, "_sidebar_width", 280)
-
-            if hasattr(self, "main_splitter"):
-                sizes = self.main_splitter.sizes()
-                if len(sizes) == 3:
-                    c_w = sizes[2] if hasattr(self, "ai_tab") and self.ai_tab.isVisible() else 0
-                    total = sum(sizes) if sum(sizes) > 0 else max(self.width(), 1200)
-                    w_w = max(total - width - c_w, 400)
-                    self.main_splitter.setSizes([width, w_w, c_w])
-                else:
-                    total = self.main_splitter.width()
-                    if total <= 0:
-                        total = self.width()
-                    self.main_splitter.setSizes(
-                        [width, max(total - width, 500)]
-                    )
-
+            self.main_splitter.setCollapsible(0, False)
         else:
             if hasattr(self, "main_splitter"):
                 sizes = self.main_splitter.sizes()
-
-                if sizes and sizes[0] > 0:
+                if sizes and sizes[0] > 100:
                     self._sidebar_width = sizes[0]
-
+            self.sidebar.setMinimumWidth(0)
             self.sidebar.hide()
+            self.main_splitter.setCollapsible(0, True)
 
-        if hasattr(self, "sidebar_toggle_btn"):
-            self.sidebar_toggle_btn.setText("◀" if visible else "▶")
+        self._apply_splitter_layout()
+        self._update_left_sidebar_btn_styles(target)
 
         try:
-            self._settings.setValue("sidebar/visible", visible)
-
-            if visible:
-                self._settings.setValue(
-                    "sidebar/width",
-                    getattr(self, "_sidebar_width", 280),
-                )
-
+            self._settings.setValue("sidebar/visible", target)
+            if target and hasattr(self, "_sidebar_width"):
+                self._settings.setValue("sidebar/width", self._sidebar_width)
         except Exception:
             pass
+
+    def _on_right_tab_changed(self, index: int) -> None:
+        self._update_right_sidebar_btn_styles()
+        if (
+            hasattr(self, "ai_tab")
+            and hasattr(self, "right_tabs")
+            and self.right_tabs.currentWidget() == self.ai_tab
+        ):
+            self.ai_tab.update_context()
+
+    def _show_right_sidebar(self) -> None:
+        if not hasattr(self, "right_sidebar"):
+            return
+        self.right_sidebar.show()
+        self._apply_splitter_layout()
+        try:
+            self._settings.setValue("copilot/visible", True)
+        except Exception:
+            pass
+
+    def _hide_right_sidebar(self) -> None:
+        if not hasattr(self, "right_sidebar"):
+            return
+        if hasattr(self, "main_splitter"):
+            sizes = self.main_splitter.sizes()
+            if len(sizes) == 3 and sizes[2] > 50:
+                self._copilot_width = sizes[2]
+                try:
+                    self._settings.setValue("copilot/width", sizes[2])
+                except Exception:
+                    pass
+        self.right_sidebar.hide()
+        self._apply_splitter_layout()
+        try:
+            self._settings.setValue("copilot/visible", False)
+        except Exception:
+            pass
+
+    def toggle_right_sidebar(self, force_visible: Optional[bool] = None) -> None:
+        """Toggle open or close the right sidebar."""
+        if not hasattr(self, "right_sidebar"):
+            return
+
+        is_open = not self.right_sidebar.isHidden()
+        target = not is_open if force_visible is None else bool(force_visible)
+
+        if target:
+            self._show_right_sidebar()
+            if (
+                hasattr(self, "right_tabs")
+                and hasattr(self, "ai_tab")
+                and self.right_tabs.currentWidget() == self.ai_tab
+            ):
+                self.ai_tab.update_context()
+        else:
+            self._hide_right_sidebar()
+
+        self._update_right_sidebar_btn_styles()
 
     def toggle_copilot(self, force_visible: Optional[bool] = None) -> None:
-        if not hasattr(self, "ai_tab"):
+        """Switch to Copilot tab and ensure right sidebar is visible, or toggle if active."""
+        if not hasattr(self, "right_sidebar"):
             return
 
-        visible = force_visible if force_visible is not None else not self.ai_tab.isVisible()
+        is_open = not self.right_sidebar.isHidden()
+        is_copilot_active = (
+            hasattr(self, "right_tabs")
+            and self.right_tabs.currentWidget() == getattr(self, "ai_tab", None)
+        )
 
-        if visible:
-            self.ai_tab.show()
-            width = getattr(self, "_copilot_width", 340)
-
-            if hasattr(self, "main_splitter"):
-                sizes = self.main_splitter.sizes()
-                if len(sizes) == 3:
-                    s_w = sizes[0] if hasattr(self, "sidebar") and self.sidebar.isVisible() else 0
-                    total = sum(sizes) if sum(sizes) > 0 else max(self.width(), 1200)
-                    w_w = max(total - s_w - width, 400)
-                    self.main_splitter.setSizes([s_w, w_w, width])
-
-            self.ai_tab.update_context()
+        if force_visible is True:
+            self._show_right_sidebar()
+            if hasattr(self, "right_tabs") and hasattr(self, "ai_tab"):
+                self.right_tabs.setCurrentWidget(self.ai_tab)
+                self.ai_tab.update_context()
+        elif force_visible is False:
+            self._hide_right_sidebar()
         else:
-            if hasattr(self, "main_splitter"):
-                sizes = self.main_splitter.sizes()
-                if len(sizes) == 3 and sizes[2] > 0:
-                    self._copilot_width = sizes[2]
+            if is_open and is_copilot_active:
+                self._hide_right_sidebar()
+            else:
+                self._show_right_sidebar()
+                if hasattr(self, "right_tabs") and hasattr(self, "ai_tab"):
+                    self.right_tabs.setCurrentWidget(self.ai_tab)
+                    self.ai_tab.update_context()
 
-            self.ai_tab.hide()
+        self._update_right_sidebar_btn_styles()
 
-        self._update_copilot_btn_style(visible)
+    def toggle_event_logs(self, force_visible: Optional[bool] = None) -> None:
+        """Switch to Event Logs tab and ensure right sidebar is visible, or toggle if active."""
+        if not hasattr(self, "right_sidebar"):
+            return
 
-        try:
-            self._settings.setValue("copilot/visible", visible)
-            if visible:
-                self._settings.setValue(
-                    "copilot/width",
-                    getattr(self, "_copilot_width", 340),
+        is_open = not self.right_sidebar.isHidden()
+        is_logs_active = (
+            hasattr(self, "right_tabs")
+            and self.right_tabs.currentWidget() == getattr(self, "event_logs_widget", None)
+        )
+
+        if force_visible is True:
+            self._show_right_sidebar()
+            if hasattr(self, "right_tabs") and hasattr(self, "event_logs_widget"):
+                self.right_tabs.setCurrentWidget(self.event_logs_widget)
+        elif force_visible is False:
+            self._hide_right_sidebar()
+        else:
+            if is_open and is_logs_active:
+                self._hide_right_sidebar()
+            else:
+                self._show_right_sidebar()
+                if hasattr(self, "right_tabs") and hasattr(self, "event_logs_widget"):
+                    self.right_tabs.setCurrentWidget(self.event_logs_widget)
+
+        self._update_right_sidebar_btn_styles()
+
+    def _update_right_sidebar_btn_styles(self) -> None:
+        theme = self.services.theme.current
+        is_visible = hasattr(self, "right_sidebar") and not self.right_sidebar.isHidden()
+
+        if hasattr(self, "right_sidebar_toggle_btn"):
+            if is_visible:
+                self.right_sidebar_toggle_btn.setText("🗂️ Right Sidebar ▶")
+                self.right_sidebar_toggle_btn.setStyleSheet(
+                    f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
                 )
-        except Exception:
-            pass
+            else:
+                self.right_sidebar_toggle_btn.setText("🗂️ Right Sidebar ◀")
+                self.right_sidebar_toggle_btn.setStyleSheet(
+                    f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
+                )
 
     def _update_copilot_btn_style(self, visible: bool) -> None:
-        if not hasattr(self, "copilot_toggle_btn"):
-            return
-        theme = self.services.theme.current
-        if visible:
-            self.copilot_toggle_btn.setText("🤖 Copilot ▶")
-            self.copilot_toggle_btn.setStyleSheet(
-                f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
-            )
-        else:
-            self.copilot_toggle_btn.setText("🤖 Copilot ◀")
-            self.copilot_toggle_btn.setStyleSheet(
-                f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
-            )
+        self._update_right_sidebar_btn_styles()
 
     # ------------------------------------------------------------
     # Tools
@@ -2103,9 +2852,27 @@ class MainWindow(QMainWindow):
         commands = [
             {"name": "VPN Toggle", "cb": self.vpn.toggle},
             {
-                "name": "Toggle AI Copilot Sidebar",
+                "name": "Toggle Right Sidebar",
                 "hint": "Ctrl+Shift+A",
-                "cb": self.toggle_copilot,
+                "cb": self.toggle_right_sidebar,
+            },
+            {
+                "name": "Open AI Copilot",
+                "hint": "Ctrl+I",
+                "cb": lambda: self.toggle_copilot(True),
+            },
+            {
+                "name": "Open Event & Audit Logs",
+                "hint": "Ctrl+Shift+L",
+                "cb": lambda: self.toggle_event_logs(True),
+            },
+            {
+                "name": "Open Welcome Screen",
+                "cb": self.open_welcome_tab,
+            },
+            {
+                "name": "Open Database Manager",
+                "cb": self.open_db_manager,
             },
             {
                 "name": "New Terminal (selected profile)",
@@ -2119,6 +2886,10 @@ class MainWindow(QMainWindow):
             {
                 "name": "Open SysAdmin Dashboard (selected profile)",
                 "cb": self.open_sysadmin_selected,
+            },
+            {
+                "name": "Open SysAdmin Dashboard (Localhost)",
+                "cb": self.open_sysadmin_local,
             },
             {
                 "name": "Open Web Hosting Manager (selected profile)",
@@ -2135,6 +2906,11 @@ class MainWindow(QMainWindow):
             {
                 "name": "Open Security Hub (Localhost)",
                 "cb": self.open_security_hub_local,
+            },
+            {
+                "name": "Open VAPT & Web Security Audit",
+                "hint": "Ctrl+Shift+V",
+                "cb": lambda: self.open_vapt_tab(),
             },
             {
                 "name": "Port Forwarding & Tunnels (selected profile)",
@@ -2402,22 +3178,32 @@ class MainWindow(QMainWindow):
             if hasattr(self, "sidebar"):
                 self._settings.setValue(
                     "sidebar/visible",
-                    self.sidebar.isVisible(),
+                    not self.sidebar.isHidden(),
                 )
 
-                if self.sidebar.isVisible() and hasattr(self, "main_splitter"):
+                if hasattr(self, "main_splitter"):
                     sizes = self.main_splitter.sizes()
-
-                    if sizes and sizes[0] > 0:
+                    if sizes and sizes[0] > 50:
                         self._settings.setValue("sidebar/width", sizes[0])
+
+            if hasattr(self, "right_sidebar"):
+                self._settings.setValue(
+                    "copilot/visible",
+                    not self.right_sidebar.isHidden(),
+                )
+
+                if hasattr(self, "main_splitter"):
+                    sizes = self.main_splitter.sizes()
+                    if len(sizes) == 3 and sizes[2] > 50:
+                        self._settings.setValue("copilot/width", sizes[2])
 
         except Exception:
             pass
 
-        for i in range(self.tabs.count() - 1, 1, -1):
+        for i in range(self.tabs.count() - 1, -1, -1):
             widget = self.tabs.widget(i)
 
-            if widget is not None:
+            if widget is not None and not self._is_permanent_tab(widget):
                 try:
                     widget.close()
                 except Exception:

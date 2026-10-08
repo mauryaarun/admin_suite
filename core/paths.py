@@ -104,3 +104,43 @@ def ensure_dirs() -> None:
             pass
 
     _migrate_legacy_files()
+
+
+def get_app_icon_path() -> Path:
+    """Return Path to the application icon file (PNG or ICO)."""
+    import sys
+    base = getattr(sys, "_MEIPASS", None)
+    candidates: list[Path] = []
+    if base:
+        base_p = Path(base)
+        candidates.extend([
+            base_p / "icon.png",
+            base_p / "resources" / "icon.png",
+            base_p / "icon.ico",
+            base_p / "resources" / "icon.ico",
+        ])
+
+    pkg_root = Path(__file__).resolve().parent.parent
+    candidates.extend([
+        pkg_root / "resources" / "icon.png",
+        pkg_root / "icon.png",
+        pkg_root / "resources" / "icon.ico",
+        pkg_root / "icon.ico",
+    ])
+
+    for p in candidates:
+        if p.is_file():
+            return p
+    return pkg_root / "icon.png"
+
+
+def get_app_icon():
+    """Return QIcon initialized with the application icon."""
+    try:
+        from PyQt6.QtGui import QIcon
+        p = get_app_icon_path()
+        if p.is_file():
+            return QIcon(str(p))
+        return QIcon()
+    except Exception:
+        return None

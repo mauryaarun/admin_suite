@@ -260,6 +260,26 @@ QSplitter::handle:horizontal {
 QSplitter::handle:vertical {
     height:2px;
 }
+QMenuBar {
+    background:$PANEL;
+    color:$TEXT;
+    border-bottom:1px solid $BORDER;
+    padding:2px 4px;
+}
+QMenuBar::item {
+    background:transparent;
+    color:$TEXT;
+    padding:4px 10px;
+    border-radius:4px;
+}
+QMenuBar::item:selected {
+    background:$HOVER;
+    color:$ACCENT;
+}
+QMenuBar::item:pressed {
+    background:$ACCENT;
+    color:white;
+}
 QMenu {
     background:$PANEL2;
     border:1px solid $BORDER;
@@ -328,6 +348,13 @@ class ThemeManager:
 
         self.current_name = "Breeze Dark"
         self.current: dict[str, str] = dict(UI_THEMES[self.current_name])
+
+    @property
+    def name(self) -> str:
+        """
+        Current theme name.
+        """
+        return self.current_name
 
     def get_theme(self, name: str) -> dict[str, str]:
         """

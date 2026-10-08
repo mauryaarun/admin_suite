@@ -167,8 +167,18 @@ class NewVHostDialog(QDialog):
         form = QFormLayout(settings_widget)
 
         self.server_type = QComboBox()
-        self.server_type.addItems(["nginx", "apache2"])
-        self.server_type.setCurrentText(default_server)
+        self.server_type.addItems(["nginx", "apache2 / httpd", "caddy"])
+        if "apache" in default_server or "httpd" in default_server:
+            self.server_type.setCurrentText("apache2 / httpd")
+        elif "caddy" in default_server:
+            self.server_type.setCurrentText("caddy")
+        else:
+            self.server_type.setCurrentText("nginx")
+        self.server_type.currentTextChanged.connect(self._on_server_changed)
+
+        self.distro_target = QComboBox()
+        self.distro_target.addItems(["Debian / Ubuntu (/etc/.../sites-available)", "RedHat / CentOS / Rocky (/etc/.../conf.d)"])
+        self.distro_target.currentTextChanged.connect(self._update_preview)
 
         self.domain_in = QLineEdit()
         self.domain_in.setPlaceholderText("example.com")
@@ -184,6 +194,14 @@ class NewVHostDialog(QDialog):
 
         self.doc_root_in = QLineEdit("/var/www/example.com/html")
         self.doc_root_in.textChanged.connect(self._update_preview)
+
+        self.access_log_in = QLineEdit()
+        self.access_log_in.setPlaceholderText("Custom access log path (optional, leave blank for default)")
+        self.access_log_in.textChanged.connect(self._update_preview)
+
+        self.error_log_in = QLineEdit()
+        self.error_log_in.setPlaceholderText("Custom error log path (optional, leave blank for default)")
+        self.error_log_in.textChanged.connect(self._update_preview)
 
         self.proxy_pass_in = QLineEdit("http://127.0.0.1:3000")
         self.proxy_pass_in.textChanged.connect(self._update_preview)
@@ -212,10 +230,13 @@ class NewVHostDialog(QDialog):
         self.block_hidden_chk.stateChanged.connect(self._update_preview)
 
         form.addRow("Web Server:", self.server_type)
+        form.addRow("Target OS Layout:", self.distro_target)
         form.addRow("Primary Domain:", self.domain_in)
         form.addRow("Domain Aliases:", self.aliases_in)
         form.addRow("Application Type:", self.site_type)
         form.addRow("Document Root:", self.doc_root_in)
+        form.addRow("Access Log Path:", self.access_log_in)
+        form.addRow("Error Log Path:", self.error_log_in)
         form.addRow("Upstream Proxy URL:", self.proxy_pass_in)
         form.addRow("PHP FastCGI Socket:", self.php_socket_in)
         form.addRow("", self.gzip_chk)
@@ -247,6 +268,12 @@ class NewVHostDialog(QDialog):
         self._on_type_changed(self.site_type.currentText())
         self._update_preview()
 
+    def _on_server_changed(self, text: str):
+        is_nginx = "nginx" in text
+        self.block_hidden_chk.setEnabled(is_nginx)
+        self.gzip_chk.setEnabled(is_nginx)
+        self._update_preview()
+
     def _on_type_changed(self, text: str) -> None:
         is_proxy = text in ("Reverse Proxy", "Node.js")
         is_php = text == "PHP-FPM"
@@ -261,20 +288,59 @@ class NewVHostDialog(QDialog):
         self._update_preview()
 
     def _update_preview(self) -> None:
+        from admin_suite.web.commands import generate_apache_vhost, generate_caddy_vhost
+
         domain = self.domain_in.text().strip() or "example.com"
-        config_text = generate_nginx_vhost(
-            domain=domain,
-            aliases=self.aliases_in.text().strip(),
-            site_type=self.site_type.currentText(),
-            doc_root=self.doc_root_in.text().strip(),
-            proxy_pass=self.proxy_pass_in.text().strip(),
-            php_socket=self.php_socket_in.text().strip(),
-            enable_gzip=self.gzip_chk.isChecked(),
-            enable_websockets=self.ws_chk.isChecked(),
-            enable_cors=self.cors_chk.isChecked(),
-            block_hidden=self.block_hidden_chk.isChecked(),
-            sec_headers=self.sec_headers_chk.isChecked(),
-        )
+        server = self.server_type.currentText()
+        aliases = self.aliases_in.text().strip()
+        site_type = self.site_type.currentText()
+        doc_root = self.doc_root_in.text().strip()
+        proxy_pass = self.proxy_pass_in.text().strip()
+        php_socket = self.php_socket_in.text().strip()
+        sec_headers = self.sec_headers_chk.isChecked()
+        access_log = self.access_log_in.text().strip()
+        error_log = self.error_log_in.text().strip()
+
+        if "apache" in server:
+            config_text = generate_apache_vhost(
+                domain=domain,
+                aliases=aliases,
+                site_type=site_type,
+                doc_root=doc_root,
+                proxy_pass=proxy_pass,
+                php_socket=php_socket,
+                access_log=access_log,
+                error_log=error_log,
+                sec_headers=sec_headers,
+            )
+        elif "caddy" in server:
+            config_text = generate_caddy_vhost(
+                domain=domain,
+                aliases=aliases,
+                site_type=site_type,
+                doc_root=doc_root,
+                proxy_pass=proxy_pass,
+            )
+        else:
+            config_text = generate_nginx_vhost(
+                domain=domain,
+                aliases=aliases,
+                site_type=site_type,
+                doc_root=doc_root,
+                proxy_pass=proxy_pass,
+                php_socket=php_socket,
+                enable_gzip=self.gzip_chk.isChecked(),
+                enable_websockets=self.ws_chk.isChecked(),
+                enable_cors=self.cors_chk.isChecked(),
+                block_hidden=self.block_hidden_chk.isChecked(),
+                sec_headers=sec_headers,
+            )
+            # If custom logs given for nginx, replace standard logs
+            if access_log:
+                config_text = config_text.replace(f"/var/log/nginx/{domain}.access.log", access_log)
+            if error_log:
+                config_text = config_text.replace(f"/var/log/nginx/{domain}.error.log", error_log)
+
         self.preview_edit.setPlainText(config_text)
 
     def _validate_and_accept(self) -> None:
@@ -284,10 +350,17 @@ class NewVHostDialog(QDialog):
         self.accept()
 
     def get_result(self) -> dict[str, Any]:
+        server_choice = "nginx"
+        if "apache" in self.server_type.currentText():
+            server_choice = "apache2"
+        elif "caddy" in self.server_type.currentText():
+            server_choice = "caddy"
+
         return {
-            "server": self.server_type.currentText(),
+            "server": server_choice,
             "domain": self.domain_in.text().strip(),
             "config": self.preview_edit.toPlainText(),
+            "is_rhel": "RedHat" in self.distro_target.currentText(),
         }
 
 

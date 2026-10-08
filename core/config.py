@@ -54,6 +54,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     # Profile ping concurrency.
     "ping_max_concurrency": 8,
+
+    # Linux & Distro Customization (Debian, RedHat/CentOS/Fedora, Arch, SUSE, or Auto)
+    "os_family": "auto",
+    "firewall_backend": "auto",  # "auto", "ufw", "firewalld", "iptables"
+    "firewall_zone": "public",
+    "custom_access_log_paths": [],
+    "custom_error_log_paths": [],
 }
 
 

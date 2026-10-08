@@ -134,8 +134,33 @@ class SplitTerminalTab(QWidget):
             action.triggered.connect(slot)
         return action
 
-    def _make_term(self) -> SshTerminalTab:
-        data = self.profile_data
+    def _make_term(self):
+        data = self.profile_data or {}
+        is_local = (
+            bool(data.get("is_local"))
+            or self.profile_name.lower() == "localhost"
+            or (
+                data.get("ssh_host") in ("127.0.0.1", "localhost")
+                and bool(data.get("use_local_exec", True))
+            )
+        )
+        if is_local:
+            import os
+            from admin_suite.terminal.local_tab import LocalTerminalTab
+
+            terminal = LocalTerminalTab(
+                self.services,
+                command=data.get("initial_cmd") or os.environ.get("SHELL", "/bin/bash"),
+                name=self.profile_name,
+            )
+            terminal.add_context_menu_extension(
+                lambda menu, t=terminal: self._extend_pane_context_menu(menu, t)
+            )
+            terminal.input_sent.connect(
+                lambda data, t=terminal: self._on_pane_input(data, t)
+            )
+            return terminal
+
         creds = profile_creds(data)
 
         terminal = SshTerminalTab(
