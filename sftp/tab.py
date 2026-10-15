@@ -22,7 +22,10 @@ from admin_suite.sftp.models import SftpAction, SftpTask
 from admin_suite.sftp.rsync import RsyncDialog
 from admin_suite.sftp.search import RemoteSearchDialog
 from admin_suite.sftp.worker import SftpWorker
+<<<<<<< HEAD
 from admin_suite.sftp.external_editor import ExternalEditorManager
+=======
+>>>>>>> 24f9740 (changes in ui)
 
 class SFTPTab(QWidget):
     """SFTP browser tab."""
@@ -71,10 +74,13 @@ class SFTPTab(QWidget):
         # Tasks pane state
         self._tasks_visible: bool = True
 
+<<<<<<< HEAD
         # External editor watcher (FileZilla parity)
         self.external_editor = ExternalEditorManager(self.services, self)
         self.external_editor.file_uploaded.connect(lambda remote_p, local_p: self.remote_panel.refresh())
 
+=======
+>>>>>>> 24f9740 (changes in ui)
         theme = self.services.theme.current
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -592,8 +598,11 @@ class SFTPTab(QWidget):
                     self.main_window.tabs.setCurrentIndex(idx)
                 else:
                     tab.show()
+<<<<<<< HEAD
             elif action == "external-edit":
                 self.external_editor.edit_remote_file(path, self.host_info)
+=======
+>>>>>>> 24f9740 (changes in ui)
             elif action == "chmod":
                 try:
                     data = json.loads(path)

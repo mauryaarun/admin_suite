@@ -523,6 +523,7 @@ class MainWindow(QMainWindow):
         )
         self.broadcast_btn.clicked.connect(self.toggle_broadcast)
 
+<<<<<<< HEAD
         self.admin_console_btn = QPushButton("🖥️ Admin Console")
         self.admin_console_btn.setStyleSheet(
             f"background:{theme.get('accent', '#3daee9')};color:white;padding:6px 12px;font-weight:bold;"
@@ -530,6 +531,8 @@ class MainWindow(QMainWindow):
         self.admin_console_btn.setToolTip("Open Unified Admin Console (SysAdmin, Security, Network, Web, VAPT)")
         self.admin_console_btn.clicked.connect(self.open_admin_console_selected)
 
+=======
+>>>>>>> 24f9740 (changes in ui)
         self.vpn_btn = QPushButton("⚡ Connect VPN")
         self.vpn_btn.setStyleSheet(
             f"background:{theme['warn']};color:white;padding:6px 12px;font-weight:bold;"
@@ -1021,6 +1024,7 @@ class MainWindow(QMainWindow):
             p_name = f" ({prof.get('name')})" if prof else ""
 
             if connected:
+<<<<<<< HEAD
                 text = f"🔌 Disconnect{p_name}"
                 status = f"● VPN{p_name}: Connected ✅"
                 color = theme["ok"]
@@ -1028,6 +1032,15 @@ class MainWindow(QMainWindow):
             else:
                 text = f"⚡ Connect{p_name}"
                 status = f"● VPN{p_name}: Disconnected"
+=======
+                text = "🔌 Disconnect VPN"
+                status = "● VPN: Connected ✅"
+                color = theme["ok"]
+
+            else:
+                text = "⚡ Connect VPN"
+                status = "● VPN: Disconnected"
+>>>>>>> 24f9740 (changes in ui)
                 color = theme["warn"]
 
         self.vpn_btn.setText(text)
