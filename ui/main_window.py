@@ -84,8 +84,10 @@ from admin_suite.sysadmin.dashboard import SysAdminTab
 from admin_suite.web.tab import WebManagerTab
 from admin_suite.security.tab import SecurityHubTab
 from admin_suite.vapt.tab import VaptTab
+from admin_suite.admin_console.console import AdminConsoleTab
 
 from admin_suite.vpn.service import VpnService
+from admin_suite.vpn.dialog import VpnConfigDialog
 
 from admin_suite.ui.toasts import Toast, NotificationCenterDialog
 from admin_suite.ui.palette import CommandPaletteDialog
@@ -521,11 +523,23 @@ class MainWindow(QMainWindow):
         )
         self.broadcast_btn.clicked.connect(self.toggle_broadcast)
 
+        self.admin_console_btn = QPushButton("🖥️ Admin Console")
+        self.admin_console_btn.setStyleSheet(
+            f"background:{theme.get('accent', '#3daee9')};color:white;padding:6px 12px;font-weight:bold;"
+        )
+        self.admin_console_btn.setToolTip("Open Unified Admin Console (SysAdmin, Security, Network, Web, VAPT)")
+        self.admin_console_btn.clicked.connect(self.open_admin_console_selected)
+
         self.vpn_btn = QPushButton("⚡ Connect VPN")
         self.vpn_btn.setStyleSheet(
             f"background:{theme['warn']};color:white;padding:6px 12px;font-weight:bold;"
         )
         self.vpn_btn.clicked.connect(self.vpn.toggle)
+
+        self.vpn_cfg_btn = QPushButton("⚙")
+        self.vpn_cfg_btn.setToolTip("Configure VPN Profiles & WireGuard Server Setup")
+        self.vpn_cfg_btn.setFixedWidth(28)
+        self.vpn_cfg_btn.clicked.connect(lambda: self.open_vpn_config_dialog())
 
         # Single right sidebar toggle button
         self.right_sidebar_toggle_btn = QPushButton("▶")
@@ -545,8 +559,10 @@ class MainWindow(QMainWindow):
 
         navbar_layout.addWidget(self.sidebar_toggle_btn)
         navbar_layout.addWidget(palette_btn)
+        navbar_layout.addWidget(self.admin_console_btn)
         navbar_layout.addWidget(self.broadcast_btn)
         navbar_layout.addWidget(self.vpn_btn)
+        navbar_layout.addWidget(self.vpn_cfg_btn)
         navbar_layout.addWidget(self.right_sidebar_toggle_btn)
         navbar_layout.addStretch()
         navbar_layout.addWidget(self.vpn_status)
@@ -779,18 +795,22 @@ class MainWindow(QMainWindow):
         # -------------------- Tools & Security Menu --------------------
         tools_menu = menubar.addMenu("&Tools")
 
-        act_tools_vapt = tools_menu.addAction("🔍 VAPT Web Security & Domain Audit")
-        act_tools_vapt.setShortcut("Ctrl+Shift+V")
-        act_tools_vapt.triggered.connect(lambda: self.open_vapt_tab())
+        act_tools_admin = tools_menu.addAction("🖥️ Unified Admin Console")
+        act_tools_admin.setShortcut("Ctrl+Shift+D")
+        act_tools_admin.triggered.connect(self.open_admin_console_selected)
 
-        act_tools_sec = tools_menu.addAction("🛡️ Security Hub (Firewall, Fail2ban, Malware)")
+        act_tools_sec = tools_menu.addAction("🛡️ Security Center")
         act_tools_sec.triggered.connect(self.open_security_hub_selected)
+
+        act_tools_sys = tools_menu.addAction("🖥 SysAdmin Dashboard")
+        act_tools_sys.triggered.connect(self.open_sysadmin_selected)
 
         act_tools_web = tools_menu.addAction("🌐 Web & Virtual Host Manager")
         act_tools_web.triggered.connect(self.open_web_manager_selected)
 
-        act_tools_sys = tools_menu.addAction("🖥 SysAdmin Dashboard")
-        act_tools_sys.triggered.connect(self.open_sysadmin_selected)
+        act_tools_vapt = tools_menu.addAction("🔍 VAPT Security & Domain Audit")
+        act_tools_vapt.setShortcut("Ctrl+Shift+V")
+        act_tools_vapt.triggered.connect(lambda: self.open_vapt_tab())
 
         act_tools_db = tools_menu.addAction("🗄️ Database Manager")
         act_tools_db.triggered.connect(self.open_db_manager)
@@ -806,8 +826,16 @@ class MainWindow(QMainWindow):
 
         tools_menu.addSeparator()
 
-        act_vpn = tools_menu.addAction("⚡ Toggle VPN (WireGuard / OpenVPN)")
+        act_vpn = tools_menu.addAction("⚡ Toggle Active VPN")
         act_vpn.triggered.connect(self.vpn.toggle)
+
+        act_vpn_cfg = tools_menu.addAction("🔒 VPN Configuration & Profiles...")
+        act_vpn_cfg.triggered.connect(lambda: self.open_vpn_config_dialog(0))
+
+        act_wg_srv = tools_menu.addAction("🛡️ WireGuard VPN Server Setup on Connected Server...")
+        act_wg_srv.triggered.connect(self.open_wireguard_server_setup)
+
+        tools_menu.addSeparator()
 
         act_bcast = tools_menu.addAction("📢 Toggle Broadcast Mode")
         act_bcast.setShortcut("F8")
@@ -989,15 +1017,17 @@ class MainWindow(QMainWindow):
 
         else:
             self.vpn_btn.setEnabled(True)
+            prof = self.vpn.get_active_profile()
+            p_name = f" ({prof.get('name')})" if prof else ""
 
             if connected:
-                text = "🔌 Disconnect VPN"
-                status = "● VPN: Connected ✅"
+                text = f"🔌 Disconnect{p_name}"
+                status = f"● VPN{p_name}: Connected ✅"
                 color = theme["ok"]
 
             else:
-                text = "⚡ Connect VPN"
-                status = "● VPN: Disconnected"
+                text = f"⚡ Connect{p_name}"
+                status = f"● VPN{p_name}: Disconnected"
                 color = theme["warn"]
 
         self.vpn_btn.setText(text)
@@ -1158,9 +1188,10 @@ class MainWindow(QMainWindow):
             if sudo_pass:
                 data["sudo_pass"] = sudo_pass
                 self.services.set_sudo_password(name, sudo_pass)
-                if name.lower() == "localhost":
+                if name.lower() in ("localhost", "local"):
                     self.services.set_sudo_password("Localhost", sudo_pass)
                     self.services.set_sudo_password("localhost", sudo_pass)
+                    self.services.set_sudo_password("Local", sudo_pass)
 
         self.refresh_profile_tree()
 
@@ -2251,124 +2282,71 @@ class MainWindow(QMainWindow):
 
         return tab
 
-    def open_sysadmin(self, name: str):
-        self.services.emit_log("SYSADMIN", f"Opened SysAdmin dashboard for: {name}", "INFO")
+    def open_admin_console(self, name: str = "", initial_category: Optional[str] = None) -> AdminConsoleTab:
+        if not name:
+            name = self._get_selected_profile_name() or "Localhost"
         data = self.profiles.get(name)
+        if not data and name.lower() in ("localhost", "local"):
+            data = self.profiles.get("localhost") or self.profiles.get("Localhost")
 
-        tab = SysAdminTab(
+        self.services.emit_log("ADMIN", f"Opened Admin Console for: {name} (Category: {initial_category or 'Default'})", "INFO")
+        tab = AdminConsoleTab(
             self.services,
             name,
             data,
-            self,
+            initial_category=initial_category,
+            parent=self,
         )
-
-        index = self.tabs.addTab(tab, f"🖥 {name}")
-        self.tabs.setCurrentIndex(index)
-
-        return tab
-
-    def open_sysadmin_local(self):
-        local_data = self.profiles.get("localhost") or self.profiles.get("Localhost")
-        tab = SysAdminTab(
-            self.services,
-            "Localhost",
-            local_data,
-            self,
-        )
-
-        index = self.tabs.addTab(tab, "🖥 Localhost")
-        self.tabs.setCurrentIndex(index)
-
-        return tab
-
-    def open_sysadmin_selected(self):
-        name = self._get_selected_profile_name()
-
-        if name:
-            self.open_sysadmin(name)
-        else:
-            self.open_sysadmin_local()
-
-    def open_web_manager(self, name: str):
-        self.services.emit_log("WEB", f"Opened Web Hosting Manager for: {name}", "INFO")
-        data = self.profiles.get(name)
-        tab = WebManagerTab(
-            self.services,
-            name,
-            data,
-            self,
-        )
-        index = self.tabs.addTab(tab, f"🌐 {name}")
-        self.tabs.setCurrentIndex(index)
-        return tab
-
-    def open_web_manager_local(self):
-        self.services.emit_log("WEB", "Opened Web Hosting Manager for Localhost", "INFO")
-        local_data = self.profiles.get("localhost") or self.profiles.get("Localhost")
-        tab = WebManagerTab(
-            self.services,
-            "Localhost",
-            local_data,
-            self,
-        )
-        index = self.tabs.addTab(tab, "🌐 Localhost")
-        self.tabs.setCurrentIndex(index)
-        return tab
-
-    def open_web_manager_selected(self):
-        name = self._get_selected_profile_name()
-        if name:
-            self.open_web_manager(name)
-        else:
-            self.open_web_manager_local()
-
-    def open_security_hub(self, name: str):
-        self.services.emit_log("SECURITY", f"Opened Security Hub for: {name}", "INFO")
-        data = self.profiles.get(name)
-        tab = SecurityHubTab(
-            self.services,
-            name,
-            data,
-            self,
-        )
-        index = self.tabs.addTab(tab, f"🛡️ {name}")
-        self.tabs.setCurrentIndex(index)
-        return tab
-
-    def open_security_hub_local(self):
-        self.services.emit_log("SECURITY", "Opened Security Hub for Localhost", "INFO")
-        local_data = self.profiles.get("localhost") or self.profiles.get("Localhost")
-        tab = SecurityHubTab(
-            self.services,
-            "Localhost",
-            local_data,
-            self,
-        )
-        index = self.tabs.addTab(tab, "🛡️ Localhost")
-        self.tabs.setCurrentIndex(index)
-        return tab
-
-    def open_security_hub_selected(self):
-        name = self._get_selected_profile_name()
-        if name:
-            self.open_security_hub(name)
-        else:
-            self.open_security_hub_local()
-
-    def open_vapt_tab(self, target: str = "") -> VaptTab:
-        if not target:
-            name = self._get_selected_profile_name()
-            if name and name in self.profiles:
-                p = self.profiles[name]
-                host = p.get("ssh_host") or p.get("host") or ""
-                if host and host not in ("localhost", "127.0.0.1"):
-                    target = host
-        self.services.emit_log("VAPT", f"Opened VAPT & Web Security Audit tab (Target: {target or 'New'})", "INFO")
-        tab = VaptTab(self.services, initial_target=target, parent=self)
-        title = f"🔍 VAPT: {target}" if target else "🔍 VAPT Audit"
+        cat_suffix = f" [{initial_category.title()}]" if initial_category else ""
+        title = f"🖥️ {name}{cat_suffix}"
         index = self.tabs.addTab(tab, title)
         self.tabs.setCurrentIndex(index)
         return tab
+
+    def open_admin_console_selected(self) -> AdminConsoleTab:
+        name = self._get_selected_profile_name() or "Localhost"
+        return self.open_admin_console(name)
+
+    def open_vpn_config_dialog(self, initial_tab: int = 0) -> None:
+        dlg = VpnConfigDialog(self.services, parent=self, initial_tab=initial_tab)
+        dlg.exec()
+
+    def open_wireguard_server_setup(self) -> None:
+        self.open_vpn_config_dialog(initial_tab=1)
+
+    def open_sysadmin(self, name: str):
+        return self.open_admin_console(name, initial_category="system")
+
+    def open_sysadmin_local(self):
+        return self.open_admin_console("Localhost", initial_category="system")
+
+    def open_sysadmin_selected(self):
+        name = self._get_selected_profile_name() or "Localhost"
+        return self.open_admin_console(name, initial_category="system")
+
+    def open_web_manager(self, name: str):
+        return self.open_admin_console(name, initial_category="web")
+
+    def open_web_manager_local(self):
+        return self.open_admin_console("Localhost", initial_category="web")
+
+    def open_web_manager_selected(self):
+        name = self._get_selected_profile_name() or "Localhost"
+        return self.open_admin_console(name, initial_category="web")
+
+    def open_security_hub(self, name: str):
+        return self.open_admin_console(name, initial_category="security")
+
+    def open_security_hub_local(self):
+        return self.open_admin_console("Localhost", initial_category="security")
+
+    def open_security_hub_selected(self):
+        name = self._get_selected_profile_name() or "Localhost"
+        return self.open_admin_console(name, initial_category="security")
+
+    def open_vapt_tab(self, target: str = ""):
+        name = self._get_selected_profile_name() or "Localhost"
+        return self.open_admin_console(name, initial_category="vapt")
 
     def open_port_forwarding(self, profile_name: Optional[str] = None):
         self.services.audit("SSH", f"Opened port forwarding & tunnels dialog")
@@ -2850,6 +2828,19 @@ class MainWindow(QMainWindow):
 
     def _build_commands(self):
         commands = [
+            {
+                "name": "Open Unified Admin Console (selected profile)",
+                "hint": "Ctrl+Shift+D",
+                "cb": self.open_admin_console_selected,
+            },
+            {
+                "name": "Open VPN Configuration & Profiles",
+                "cb": lambda: self.open_vpn_config_dialog(0),
+            },
+            {
+                "name": "WireGuard VPN Server Setup on Connected Server",
+                "cb": self.open_wireguard_server_setup,
+            },
             {"name": "VPN Toggle", "cb": self.vpn.toggle},
             {
                 "name": "Toggle Right Sidebar",

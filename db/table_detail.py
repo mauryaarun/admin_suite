@@ -28,6 +28,7 @@ from admin_suite.db.dialogs import RecordDialog
 from admin_suite.db.export import export_result_csv
 from admin_suite.db.models import SqlResultModel
 from admin_suite.db.quoting import placeholder, qident
+from admin_suite.db.table_view import EnhancedTableDataWidget
 from admin_suite.db.worker import DbWorker
 
 
@@ -141,18 +142,13 @@ class TableDetailTab(QWidget):
 
         data_layout.addLayout(bar)
 
-        self.data_table = QTableView()
-        self.data_table.setAlternatingRowColors(True)
-
-        self.data_table.setSelectionBehavior(
-            QTableView.SelectionBehavior.SelectRows
-        )
-
-        self.data_model = SqlResultModel()
-        self.data_table.setModel(self.data_model)
+        # Enhanced Table Data View
+        self.enhanced_data_view = EnhancedTableDataWidget(self.services, parent=self)
+        self.data_table = self.enhanced_data_view.data_table
+        self.data_model = self.enhanced_data_view.source_model
         self.data_table.doubleClicked.connect(self.update_record)
-
-        data_layout.addWidget(self.data_table)
+        self.enhanced_data_view.where_clause_generated.connect(self._on_where_clause_pushed)
+        data_layout.addWidget(self.enhanced_data_view, 1)
 
         self.row_label = QLabel("")
         self.row_label.setStyleSheet(f"color:{theme['sub']};")
@@ -243,11 +239,23 @@ class TableDetailTab(QWidget):
         headers: list[str],
         rows: list[list[Any]],
     ) -> None:
-        self.data_model.set_result(headers, rows)
-
-        self.data_table.resizeColumnsToContents()
-
+        self.enhanced_data_view.set_result(headers, rows)
         self.row_label.setText(f"{len(rows)} row(s)")
+
+    def _on_where_clause_pushed(self, where_clause: str) -> None:
+        self.row_label.setText("Filtering...")
+        worker = DbWorker(
+            self.session_manager,
+            self.cfg,
+            mode="run_query",
+            query=(
+                f"SELECT * FROM {self.fqn} WHERE {where_clause} "
+                f"LIMIT {self.limit_input.value()};"
+            ),
+            db_name=self.db_name,
+        )
+        worker.data_loaded.connect(self._populate_data)
+        self._start_worker(worker)
 
     # ------------------------------------------------------------
     # HeidiSQL Table Designer
@@ -280,12 +288,10 @@ class TableDetailTab(QWidget):
         ]
 
     def _selected_original_row(self) -> Optional[list[Any]]:
-        index = self.data_table.currentIndex()
-
-        if not index.isValid():
+        row_idx = self.enhanced_data_view.get_selected_source_row_index()
+        if row_idx < 0:
             return None
-
-        return self.data_model.row_values(index.row())
+        return self.data_model.row_values(row_idx)
 
     def _execute_crud(self, sql: str, params=None) -> None:
         worker = DbWorker(

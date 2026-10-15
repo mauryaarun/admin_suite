@@ -831,6 +831,14 @@ class ConnectionManagerDialog(QDialog):
         vpn_tab = QWidget()
         vpn_layout = QFormLayout(vpn_tab)
 
+        btn_full_vpn = QPushButton("⚡ Open VPN Profiles & WireGuard Server Manager")
+        btn_full_vpn.setStyleSheet("font-weight: bold; padding: 6px;")
+        def _open_vpn_dlg():
+            from admin_suite.vpn.dialog import VpnConfigDialog
+            VpnConfigDialog(self.services, parent=self).exec()
+        btn_full_vpn.clicked.connect(_open_vpn_dlg)
+        vpn_layout.addRow(btn_full_vpn)
+
         self.vpn_cli = QLineEdit(self.services.config.get("vpn_cli", ""))
         self.vpn_host = QLineEdit(self.services.config.get("vpn_host", ""))
 
@@ -840,8 +848,8 @@ class ConnectionManagerDialog(QDialog):
         self.vpn_pass = QLineEdit(self.services.secrets.get("vpn_pass", ""))
         self.vpn_pass.setEchoMode(QLineEdit.EchoMode.Password)
 
-        vpn_layout.addRow("VPN CLI Path:", self.vpn_cli)
-        vpn_layout.addRow("VPN Host:", self.vpn_host)
+        vpn_layout.addRow("Legacy VPN CLI:", self.vpn_cli)
+        vpn_layout.addRow("Legacy VPN Host:", self.vpn_host)
         vpn_layout.addRow("Cert Password:", self.vpn_cert)
         vpn_layout.addRow("Password:", self.vpn_pass)
 

@@ -667,8 +667,9 @@ class VaptTab(QWidget):
             "SUCCESS",
         )
         self.services.notifications.push(
-            f"VAPT Audit Complete: {data.get('domain')} (Grade {grade}, Score {score}/100)",
-            level="success" if score >= 75 else "warning",
+            "ok" if score >= 75 else "warn",
+            "VAPT Audit Complete",
+            f"{data.get('domain')} (Grade {grade}, Score {score}/100)",
         )
 
     def _on_audit_failed(self, err_msg: str):

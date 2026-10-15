@@ -55,10 +55,21 @@ $PYTHON_CMD -m PyInstaller \
   --hidden-import admin_suite.vapt.reporter \
   --hidden-import admin_suite.sysadmin.presenter \
   --hidden-import admin_suite.ui.linux_settings_dialog \
+  --hidden-import admin_suite.admin_console \
+  --hidden-import admin_suite.admin_console.console \
+  --hidden-import admin_suite.admin_console.terminal_pane \
+  --hidden-import admin_suite.admin_console.network_tools \
+  --hidden-import admin_suite.vpn \
+  --hidden-import admin_suite.vpn.profiles \
+  --hidden-import admin_suite.vpn.service \
+  --hidden-import admin_suite.vpn.dialog \
+  --hidden-import admin_suite.vpn.wireguard_server \
+  --hidden-import admin_suite.db.table_view \
   --collect-binaries PyQt6 \
   --collect-datas admin_suite \
   --add-data "icon.png:." \
   --add-data "resources:resources" \
   admin_entry.py
+
 
 echo "Build completed successfully! Binary located in dist/AdminSuite"

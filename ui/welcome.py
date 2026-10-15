@@ -198,7 +198,7 @@ class WelcomeWidget(QWidget):
         self.hero_expanded_widget.setVisible(not self._title_collapsed)
         self.hero_collapsed_widget.setVisible(self._title_collapsed)
 
-        content_layout.addWidget(self.hero_frame)
+        #content_layout.addWidget(self.hero_frame)
 
         # ------------------------------------------------------------
         # Quick Actions Grid (Updated & Streamlined)
@@ -265,12 +265,14 @@ class WelcomeWidget(QWidget):
                 ],
             ),
             (
-                "🛡️ Security, Web & AI",
+                "🛡️ Security, Web & Admin",
                 [
+                    ("🖥️ Unified Admin Console", self.main_window.open_admin_console_selected),
                     ("🔍 VAPT & Web Security Audit", self.main_window.open_vapt_tab),
-                    ("🛡️ Security Hub (Firewall/Fail2ban)", self.main_window.open_security_hub_selected),
+                    ("🛡️ Security Center (Firewall/Fail2ban)", self.main_window.open_security_hub_selected),
                     ("🌐 Web & Virtual Host Manager", self.main_window.open_web_manager_selected),
-                    ("⚡ WireGuard / OpenVPN Toggle", self.main_window.vpn.toggle),
+                    ("🔒 VPN Profiles & WireGuard Server", self.main_window.open_vpn_config_dialog),
+                    ("⚡ Quick VPN Toggle", self.main_window.vpn.toggle),
                     ("🤖 AI Copilot (Ctrl+Shift+A)", lambda: self.main_window.toggle_copilot(True)),
                 ],
             ),

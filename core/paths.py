@@ -31,6 +31,7 @@ XTERM_DIR = CACHE_DIR / "xterm"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 PROFILES_FILE = DATA_DIR / "profiles.json"
 DB_PROFILES_FILE = DATA_DIR / "db_profiles.json"
+VPN_PROFILES_FILE = DATA_DIR / "vpn_profiles.json"
 SNIPPETS_FILE = DATA_DIR / "snippets.json"
 RECENT_FILE = DATA_DIR / "recent.json"
 

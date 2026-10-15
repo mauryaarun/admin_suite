@@ -61,6 +61,11 @@ from admin_suite.db.backends import (
     BACKENDS,
 )
 
+from admin_suite.db.table_view import (
+    EnhancedTableDataWidget,
+    SmartSortFilterProxyModel,
+)
+
 __all__ = [
     "placeholder",
     "qident",
@@ -82,4 +87,6 @@ __all__ = [
     "DatabaseManagerWidget",
     "TableDetailTab",
     "BACKENDS",
+    "EnhancedTableDataWidget",
+    "SmartSortFilterProxyModel",
 ]

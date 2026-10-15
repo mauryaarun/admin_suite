@@ -40,6 +40,7 @@ class RemoteExecThread(QThread):
             is_local = (
                 not self.profile
                 or bool(self.profile.get("is_local"))
+                or str(self.profile.get("name", "")).lower() in ("localhost", "local")
                 or (
                     self.profile.get("ssh_host") in ("localhost", "127.0.0.1", "::1")
                     and bool(self.profile.get("use_local_exec", True))
@@ -53,7 +54,7 @@ class RemoteExecThread(QThread):
             if is_local:
                 p = subprocess.Popen(
                     ["bash", "-c", self.cmd],
-                    stdin=subprocess.PIPE if self.sudo_password is not None else None,
+                    stdin=subprocess.PIPE if self.sudo_password else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,

@@ -187,6 +187,9 @@ class HardeningAuditorWidget(QWidget):
         self.run_cmd(SecurityCommands.read_sshd_config(), self._on_sshd_result)
         self.run_cmd(SecurityCommands.system_audit_probe(), self._on_probe_result)
 
+    run_audit = refresh
+
+
     def _on_sshd_result(self, stdout: str, stderr: str, code: int):
         data = SecurityParsers.parse_sshd_config(stdout)
         self._ssh_checks = data["checks"]

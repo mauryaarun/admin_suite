@@ -118,6 +118,17 @@ class AppServices:
             self._sudo_passwords[profile_name] = stored
             return stored
 
+        # Fallback for localhost / local aliases
+        if profile_name.lower() in ("localhost", "local", "127.0.0.1"):
+            for alias in ("localhost", "Localhost", "Local"):
+                if alias in self._sudo_passwords:
+                    return self._sudo_passwords[alias]
+                stored_alias = self.secrets.get(f"prof_sudo_{alias}", "")
+                if stored_alias:
+                    self._sudo_passwords[alias] = stored_alias
+                    self._sudo_passwords[profile_name] = stored_alias
+                    return stored_alias
+
         return None
 
     def set_sudo_password(
@@ -130,8 +141,15 @@ class AppServices:
         Cache sudo password for the session and optionally persist to secret store.
         """
         self._sudo_passwords[profile_name] = password
+        aliases = [profile_name]
+        if profile_name.lower() in ("localhost", "local", "127.0.0.1"):
+            aliases = list(dict.fromkeys([profile_name, "localhost", "Localhost", "Local"]))
+            for alias in aliases:
+                self._sudo_passwords[alias] = password
+
         if persist:
-            self.secrets.set(f"prof_sudo_{profile_name}", password)
+            for alias in aliases:
+                self.secrets.set(f"prof_sudo_{alias}", password)
 
     def clear_sudo_password(self, profile_name: str) -> None:
         """
@@ -142,3 +160,11 @@ class AppServices:
             self.secrets.set(f"prof_sudo_{profile_name}", "")
         except Exception:
             pass
+
+        if profile_name.lower() in ("localhost", "local", "127.0.0.1"):
+            for alias in ("localhost", "Localhost", "Local"):
+                self._sudo_passwords.pop(alias, None)
+                try:
+                    self.secrets.set(f"prof_sudo_{alias}", "")
+                except Exception:
+                    pass

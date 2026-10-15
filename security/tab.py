@@ -48,7 +48,7 @@ class _LocalExecWorker(QThread):
         try:
             res = subprocess.Popen(
                 ["bash", "-c", self.cmd],
-                stdin=subprocess.PIPE if self.sudo_password is not None else None,
+                stdin=subprocess.PIPE if self.sudo_password else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

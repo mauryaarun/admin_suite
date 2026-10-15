@@ -66,6 +66,7 @@ from admin_suite.db.models import SqlResultModel
 from admin_suite.db.quoting import placeholder, qident, sql_literal
 from admin_suite.db.session import DbSessionManager
 from admin_suite.db.table_detail import TableDetailTab
+from admin_suite.db.table_view import EnhancedTableDataWidget
 from admin_suite.db.worker import DbWorker
 
 
@@ -318,15 +319,13 @@ class DatabaseManagerWidget(QWidget):
 
         layout.addLayout(action_bar)
 
-        # Table Grid
-        self.data_table = QTableView()
-        self.data_table.setAlternatingRowColors(True)
-        self.data_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.data_model = SqlResultModel()
-        self.data_table.setModel(self.data_model)
-        self.data_table.doubleClicked.connect(self.edit_selected_data_row)
+        # Enhanced Table Grid
+        self.enhanced_data_view = EnhancedTableDataWidget(self.services, parent=self)
+        self.data_table = self.enhanced_data_view.data_table
+        self.data_model = self.enhanced_data_view.source_model
+        self.enhanced_data_view.where_clause_generated.connect(self._on_where_clause_pushed)
         ReportExporter.attach_export_context_menu(self.data_table)
-        layout.addWidget(self.data_table, 1)
+        layout.addWidget(self.enhanced_data_view, 1)
 
         # Bottom query bar & status
         bottom_bar = QHBoxLayout()
@@ -759,12 +758,16 @@ class DatabaseManagerWidget(QWidget):
         self._current_data_headers = headers or []
         self._current_data_rows = rows or []
 
-        self.data_model.set_result(self._current_data_headers, self._current_data_rows)
-        self.data_table.resizeColumnsToContents()
+        self.enhanced_data_view.set_result(self._current_data_headers, self._current_data_rows)
         self.data_status_label.setText(
             f"{len(rows)} row(s), {len(headers)} col(s) in {elapsed * 1000:.0f} ms"
         )
         self._update_export_buttons_state()
+
+    def _on_where_clause_pushed(self, where_sql: str) -> None:
+        """Called when user clicks '⚡ Push to SQL WHERE' in the enhanced table filter bar."""
+        self.data_filter_input.setText(where_sql)
+        self.load_table_data()
 
     def load_table_schema(self, db_name: Optional[str] = None, table_name: Optional[str] = None) -> None:
         db = db_name or self.current_schema
@@ -1171,12 +1174,11 @@ class DatabaseManagerWidget(QWidget):
             self._start_worker(worker)
 
     def edit_selected_data_row(self) -> None:
-        selected_indexes = self.data_table.selectionModel().selectedRows()
-        if not selected_indexes:
+        row_idx = self.enhanced_data_view.get_selected_source_row_index()
+        if row_idx < 0:
             QMessageBox.information(self, "Edit", "Please select a row to edit.")
             return
 
-        row_idx = selected_indexes[0].row()
         if row_idx >= len(self._current_data_rows):
             return
 
@@ -1231,8 +1233,8 @@ class DatabaseManagerWidget(QWidget):
         self._start_worker(worker)
 
     def delete_selected_data_row(self) -> None:
-        selected_indexes = self.data_table.selectionModel().selectedRows()
-        if not selected_indexes:
+        row_idx = self.enhanced_data_view.get_selected_source_row_index()
+        if row_idx < 0:
             QMessageBox.information(self, "Delete", "Please select a row to delete.")
             return
 
@@ -1243,7 +1245,6 @@ class DatabaseManagerWidget(QWidget):
         ) != QMessageBox.StandardButton.Yes:
             return
 
-        row_idx = selected_indexes[0].row()
         if row_idx >= len(self._current_data_rows):
             return
 
