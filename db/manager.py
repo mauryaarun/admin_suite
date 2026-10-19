@@ -200,7 +200,6 @@ class DatabaseManagerWidget(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.itemExpanded.connect(self.on_tree_expanded)
         self.tree.itemClicked.connect(self.on_tree_item_clicked)
-        self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         self.tree.itemDoubleClicked.connect(self.on_tree_dbl_click)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.show_tree_menu)
@@ -631,10 +630,20 @@ class DatabaseManagerWidget(QWidget):
         tbl_item = self.db_summary_table.item(row, 0)
         if tbl_item and self.current_schema:
             tbl_name = tbl_item.text().strip()
+            if tbl_name != self.current_table:
+                self.data_filter_input.clear()
             self.current_table = tbl_name
-            self.load_table_data(self.current_schema, tbl_name)
+            fqn = f"{self._qident(self.current_schema)}.{self._qident(tbl_name)}"
+            self.data_header_label.setText(f"📋 {fqn}")
+            self.schema_header_label.setText(f"📐 {fqn}")
+            self.info_header_label.setText(f"📋 Table: {fqn}")
+            limit = self.data_limit_spin.value()
+            query = f"SELECT * FROM {fqn} LIMIT {limit};"
+            self.query_edit.setPlainText(query)
+            self.data_sql_preview.setText(query)
             self.load_table_schema(self.current_schema, tbl_name)
             self.load_table_info(self.current_schema, tbl_name)
+            self.load_table_data(self.current_schema, tbl_name)
             self.workbench_tabs.setCurrentIndex(0)
 
     # ============================================================
@@ -662,6 +671,8 @@ class DatabaseManagerWidget(QWidget):
         elif data[0] == "table":
             db_name = data[1]
             table_name = data[2]
+            if table_name != self.current_table or db_name != self.current_schema:
+                self.data_filter_input.clear()
             self.current_schema = db_name
             self.current_table = table_name
 
@@ -671,12 +682,15 @@ class DatabaseManagerWidget(QWidget):
             self.info_header_label.setText(f"📋 Table: {fqn}")
 
             limit = self.data_limit_spin.value()
-            self.data_sql_preview.setText(f"SELECT * FROM {fqn} LIMIT {limit};")
+            query = f"SELECT * FROM {fqn} LIMIT {limit};"
+            self.data_sql_preview.setText(query)
+            self.query_edit.setPlainText(query)
 
-            # Load schema into Schema tab
-            self.load_table_schema(db_name, table_name)
-            # Load metadata and DDL into Info tab
-            self.load_table_info(db_name, table_name)
+            cur_tab = self.workbench_tabs.currentIndex()
+            if cur_tab == 1:
+                self.load_table_schema(db_name, table_name)
+            elif cur_tab == 3:
+                self.load_table_info(db_name, table_name)
 
     def on_tree_dbl_click(self, item: QTreeWidgetItem, column: int = 0) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole)
@@ -686,15 +700,20 @@ class DatabaseManagerWidget(QWidget):
         if data[0] == "table":
             db_name = data[1]
             table_name = data[2]
+            if table_name != self.current_table or db_name != self.current_schema:
+                self.data_filter_input.clear()
             self.current_schema = db_name
             self.current_table = table_name
 
             fqn = f"{self._qident(db_name)}.{self._qident(table_name)}"
-            limit = self.data_limit_spin.value()
+            self.data_header_label.setText(f"📋 {fqn}")
+            self.schema_header_label.setText(f"📐 {fqn}")
+            self.info_header_label.setText(f"📋 Table: {fqn}")
 
-            # Pre-fill query editor
+            limit = self.data_limit_spin.value()
             query = f"SELECT * FROM {fqn} LIMIT {limit};"
             self.query_edit.setPlainText(query)
+            self.data_sql_preview.setText(query)
 
             # Load Schema, Info, and Data
             self.load_table_schema(db_name, table_name)
@@ -802,12 +821,24 @@ class DatabaseManagerWidget(QWidget):
 
         pk_cols = []
         for col in self._current_table_columns:
-            field = str(col.get("Field", ""))
-            ctype = str(col.get("Type", ""))
-            cnull = str(col.get("Null", ""))
-            ckey = str(col.get("Key", ""))
-            cdef = str(col.get("Default", "") or "")
-            cextra = str(col.get("Extra", ""))
+            if isinstance(col, dict):
+                col_ci = {str(k).lower(): v for k, v in col.items()}
+                field = str(col_ci.get("field") or col_ci.get("column_name") or "")
+                ctype = str(col_ci.get("type") or col_ci.get("data_type") or "")
+                cnull = str(col_ci.get("null") or col_ci.get("is_nullable") or "")
+                ckey = str(col_ci.get("key") or "")
+                cdef = str(col_ci.get("default") or col_ci.get("column_default") or "")
+                cextra = str(col_ci.get("extra") or "")
+            elif isinstance(col, (list, tuple)):
+                field = str(col[0]) if len(col) > 0 else ""
+                ctype = str(col[1]) if len(col) > 1 else ""
+                cnull = str(col[2]) if len(col) > 2 else ""
+                ckey = str(col[3]) if len(col) > 3 else ""
+                cdef = str(col[4]) if len(col) > 4 else ""
+                cextra = str(col[5]) if len(col) > 5 else ""
+            else:
+                field = str(col)
+                ctype = cnull = ckey = cdef = cextra = ""
 
             if ckey.upper() == "PRI":
                 pk_cols.append(field)
@@ -843,7 +874,11 @@ class DatabaseManagerWidget(QWidget):
         self.table_ddl_widget.show()
 
         engine = info.get("engine", "Unknown")
-        rows = info.get("rows", 0)
+        raw_rows = info.get("rows", 0)
+        try:
+            rows_str = f"{int(raw_rows):,}" if raw_rows is not None else "0"
+        except Exception:
+            rows_str = str(raw_rows if raw_rows is not None else 0)
         data_len = _format_bytes(info.get("data_length", 0))
         idx_len = _format_bytes(info.get("index_length", 0))
         auto_inc = info.get("auto_increment") or "N/A"
@@ -856,7 +891,7 @@ class DatabaseManagerWidget(QWidget):
             f"<b>Database:</b> {info.get('schema_name')} &nbsp; | &nbsp; "
             f"<b>Engine:</b> {engine} &nbsp; | &nbsp; "
             f"<b>Row Format:</b> {row_fmt}<br>"
-            f"<b>Est. Rows:</b> {rows:,} &nbsp; | &nbsp; "
+            f"<b>Est. Rows:</b> {rows_str} &nbsp; | &nbsp; "
             f"<b>Data Size:</b> {data_len} &nbsp; | &nbsp; "
             f"<b>Index Size:</b> {idx_len} &nbsp; | &nbsp; "
             f"<b>Auto-Inc:</b> {auto_inc} &nbsp; | &nbsp; "
@@ -1476,11 +1511,22 @@ class DatabaseManagerWidget(QWidget):
         columns: list[dict],
     ) -> None:
         for col in columns:
-            field = col.get("Field", "")
-            self._known_words.append(field)
-            parent_item.addChild(
-                QTreeWidgetItem([f"🔢 {field} ({col.get('Type', '')})"])
-            )
+            if isinstance(col, dict):
+                col_ci = {str(k).lower(): v for k, v in col.items()}
+                field = str(col_ci.get("field") or col_ci.get("column_name") or "")
+                ctype = str(col_ci.get("type") or col_ci.get("data_type") or "")
+            elif isinstance(col, (list, tuple)):
+                field = str(col[0]) if len(col) > 0 else ""
+                ctype = str(col[1]) if len(col) > 1 else ""
+            else:
+                field = str(col)
+                ctype = ""
+
+            if field:
+                self._known_words.append(field)
+                parent_item.addChild(
+                    QTreeWidgetItem([f"🔢 {field} ({ctype})"])
+                )
         self._completer.set_words(self._known_words)
 
     def show_tree_menu(self, pos) -> None:
@@ -1997,12 +2043,23 @@ class DatabaseManagerWidget(QWidget):
     # ============================================================
 
     def on_db_error(self, err: str) -> None:
-        self.row_count_label.setText(f"Error: {err}")
-        self.conn_status.setText("● Error ❌")
+        if hasattr(self, "row_count_label"):
+            self.row_count_label.setText(f"Error: {err}")
+        if hasattr(self, "data_status_label"):
+            self.data_status_label.setText(f"Error: {err}")
+        if hasattr(self, "schema_status_label"):
+            self.schema_status_label.setText(f"Error: {err}")
+        if hasattr(self, "conn_status"):
+            self.conn_status.setText("● Error ❌")
         self.services.notifications.push("error", "Database", str(err)[:200])
+        prof_name = "Default"
+        if getattr(self, "active_db_profile", None):
+            prof_name = self.active_db_profile.get("name") or "Default"
+        elif getattr(self, "active_profile", None):
+            prof_name = self.active_profile.get("name") or "Default"
         self.services.emit_log(
             "DB",
-            f"Database error ({self.active_profile.get('name') if getattr(self, 'active_profile', None) else 'Default'}): {err}",
+            f"Database error ({prof_name}): {err}",
             "ERROR",
         )
         QMessageBox.critical(self, "Database Error", str(err))

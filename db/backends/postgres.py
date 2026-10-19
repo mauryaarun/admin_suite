@@ -159,7 +159,7 @@ class PGBackend:
         if cur.description:
             headers = [d[0] for d in cur.description]
 
-            return headers, [list(row.values()) for row in cur.fetchall()], True
+            return headers, [list(row.values()) if isinstance(row, dict) else list(row) for row in cur.fetchall()], True
 
         if hasattr(cur, "connection") and cur.connection:
             cur.connection.commit()

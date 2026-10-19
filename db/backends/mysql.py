@@ -66,7 +66,7 @@ class MySQLBackend:
             rows = cur.fetchall()
             headers = [d[0] for d in cur.description]
 
-            return headers, [list(row.values()) for row in rows], True
+            return headers, [list(row.values()) if isinstance(row, dict) else list(row) for row in rows], True
 
         cur.connection.commit()
 

@@ -300,9 +300,17 @@ class SftpWorker(QThread):
 
     def _list_dir(self, path: str) -> None:
         entries = []
+        target_path = path
+
+        if not target_path or target_path in (".", "~"):
+            try:
+                target_path = self.sftp.normalize(".")
+            except Exception:
+                user_str = str(self.user or "").strip()
+                target_path = "/root" if user_str == "root" else (f"/home/{user_str}" if user_str else "/")
 
         try:
-            for e in self.sftp.listdir_attr(path):
+            for e in self.sftp.listdir_attr(target_path):
                 entries.append(
                     {
                         "name": e.filename,
@@ -313,14 +321,44 @@ class SftpWorker(QThread):
                     }
                 )
 
+        except FileNotFoundError:
+            # If the guessed directory doesn't exist on remote, try normalizing '.' or root '/'
+            fallback = None
+            if target_path != "/":
+                try:
+                    norm = self.sftp.normalize(".")
+                    if norm and norm != target_path:
+                        fallback = norm
+                except Exception:
+                    pass
+            if not fallback and target_path != "/":
+                fallback = "/"
+
+            if fallback:
+                try:
+                    target_path = fallback
+                    for e in self.sftp.listdir_attr(target_path):
+                        entries.append(
+                            {
+                                "name": e.filename,
+                                "size": e.st_size or 0,
+                                "is_dir": stat.S_ISDIR(e.st_mode),
+                                "mode": e.st_mode,
+                                "mtime": e.st_mtime or 0,
+                            }
+                        )
+                except Exception as ex2:
+                    self.status_update.emit(
+                        f"WARNING: List error in {target_path}: {ex2}"
+                    )
         except Exception as ex:
             self.status_update.emit(
-                f"WARNING: List error in {path}: {ex}"
+                f"WARNING: List error in {target_path}: {ex}"
             )
 
         entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
 
-        self.listing_ready.emit(entries, path)
+        self.listing_ready.emit(entries, target_path)
 
     def _progress_callback(self, done: int, total: int) -> None:
         self.transfer_progress.emit(done, total)

@@ -22,6 +22,11 @@ from admin_suite.core import (
 from admin_suite.core import paths
 
 
+from admin_suite.core.action_registry import ActionRegistry
+from admin_suite.core.task_manager import TaskManager
+from admin_suite.ssh.pool import get_ssh_pool, SshConnectionPool
+
+
 COMMON_PASSWORD_KEYS = (
     "ssh_pass",
     "db_pass",
@@ -48,9 +53,25 @@ class AppServices:
         self.notifications = NotificationHub()
 
         self.theme = ThemeManager()
+        self.actions = ActionRegistry()
+        self.ssh_pool = get_ssh_pool()
+        self.tasks = TaskManager()
 
         # In-memory session cache for sudo/root passwords
         self._sudo_passwords: dict[str, str] = {}
+
+    def shutdown(self) -> None:
+        """
+        Clean up connection pools and resources on shutdown.
+        """
+        try:
+            self.tasks.cancel_all()
+        except Exception:
+            pass
+        try:
+            self.ssh_pool.close_all()
+        except Exception:
+            pass
 
     def emit_log(
         self,

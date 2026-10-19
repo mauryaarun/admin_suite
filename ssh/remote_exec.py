@@ -8,6 +8,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from admin_suite.ssh.client import ssh_kwargs
 from admin_suite.ssh.credentials import SshCredentials, profile_creds
 from admin_suite.ssh.hostkeys import create_ssh_client
+from admin_suite.ssh.pool import get_ssh_pool
 
 
 class RemoteExecThread(QThread):
@@ -68,44 +69,13 @@ class RemoteExecThread(QThread):
                 self.finished_output.emit(out, err or "", p.returncode)
                 return
 
-            # Extract connection parameters from remote profile
-            host = self.profile.get("ssh_host") or self.profile.get("host", "localhost")
-            port = int(self.profile.get("ssh_port", 22) or 22)
-            user = self.profile.get("ssh_user") or self.profile.get("user", "")
-
-            # Extract credentials
-            creds = profile_creds(self.profile)
-
-            # Build SSH kwargs with connection parameters
-            kw = ssh_kwargs(
-                host=host,
-                port=port,
-                user=user,
-                creds=creds,
-            )
-
-            # Create and connect SSH client
-            client = create_ssh_client()
-            client.connect(**kw)
-
-            # Execute command
-            stdin, stdout, stderr = client.exec_command(
+            pool = get_ssh_pool()
+            out, err, rc = pool.execute(
+                self.profile,
                 self.cmd,
                 timeout=self.timeout,
+                sudo_password=self.sudo_password,
             )
-
-            if self.sudo_password:
-                try:
-                    stdin.write(self.sudo_password + "\n")
-                    stdin.flush()
-                except Exception:
-                    pass
-
-            out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
-            rc = stdout.channel.recv_exit_status()
-
-            client.close()
             combined = out + (("\n" + err) if err else "")
             self.finished_cmd.emit(combined, rc)
             self.finished_output.emit(out, err, rc)

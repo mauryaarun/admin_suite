@@ -4,6 +4,7 @@ Database session and SSH tunnel management.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 try:
@@ -129,11 +130,143 @@ class TunnelManager:
 
 class DbSessionManager:
     """
-    Creates database connections using backend + optional SSH tunnel.
+    Creates and manages persistent database connections using backend + optional SSH tunnel.
+    Supports connection pooling, health-checking, and keepalives.
     """
 
     def __init__(self):
         self.tunnels = TunnelManager()
+        self._connections: dict[tuple, Any] = {}
+        self._available: dict[tuple, list[Any]] = {}
+        self._in_use: dict[tuple, set[Any]] = {}
+        self._lock = threading.Lock()
+
+    def _conn_key(self, cfg: dict[str, Any]) -> tuple:
+        return (
+            cfg.get("backend", "mysql"),
+            cfg.get("db_host", ""),
+            _safe_int(cfg.get("db_port", 0), 0),
+            cfg.get("db_user", ""),
+            cfg.get("db_name", ""),
+            cfg.get("sqlite_path", ""),
+            bool(cfg.get("use_tunnel")),
+            cfg.get("ssh_host", ""),
+            _safe_int(cfg.get("ssh_port", 22), 22),
+        )
+
+    def is_alive(self, conn: Any, backend_name: str) -> bool:
+        if conn is None:
+            return False
+        try:
+            if backend_name == "mysql":
+                conn.ping(reconnect=False)
+                return True
+            elif backend_name == "postgresql":
+                return getattr(conn, "closed", 1) == 0
+            elif backend_name == "sqlite":
+                conn.execute("SELECT 1")
+                return True
+        except Exception:
+            return False
+        return True
+
+    def acquire(self, cfg: dict[str, Any]):
+        """Acquire a live pooled database connection or establish a new one."""
+        key = self._conn_key(cfg)
+        backend_name = cfg.get("backend", "mysql")
+        with self._lock:
+            avail = self._available.setdefault(key, [])
+            while avail:
+                conn = avail.pop()
+                if self.is_alive(conn, backend_name):
+                    self._in_use.setdefault(key, set()).add(conn)
+                    self._connections[key] = conn
+                    return conn
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            # Connect fresh
+            new_conn = self.connect(cfg)
+            self._in_use.setdefault(key, set()).add(new_conn)
+            self._connections[key] = new_conn
+            return new_conn
+
+    def release(self, cfg: dict[str, Any], conn: Any, has_error: bool = False) -> None:
+        """Release connection back to pool, discarding if broken."""
+        if not conn:
+            return
+        key = self._conn_key(cfg)
+        backend_name = cfg.get("backend", "mysql")
+        with self._lock:
+            in_use = self._in_use.setdefault(key, set())
+            in_use.discard(conn)
+
+            if has_error or not self.is_alive(conn, backend_name):
+                if self._connections.get(key) is conn:
+                    self._connections.pop(key, None)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            else:
+                avail = self._available.setdefault(key, [])
+                if len(avail) < 8:
+                    avail.append(conn)
+                    self._connections[key] = conn
+                else:
+                    if self._connections.get(key) is conn:
+                        self._connections.pop(key, None)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+    def close_connection(self, cfg: dict[str, Any]) -> None:
+        """Close connection for a given configuration."""
+        key = self._conn_key(cfg)
+        with self._lock:
+            self._connections.pop(key, None)
+            for conn in self._available.pop(key, []):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            for conn in self._in_use.pop(key, set()):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def get_session(self, cfg: dict[str, Any]):
+        """Helper to get a direct cursor/session for DDL or manual execution."""
+        conn = self.acquire(cfg)
+        manager = self
+        class _DirectSession:
+            def __init__(self, c):
+                self.conn = c
+            def execute(self, sql, params=None):
+                cur = self.conn.cursor()
+                try:
+                    if params:
+                        cur.execute(sql, params)
+                    else:
+                        cur.execute(sql)
+                    if hasattr(self.conn, "commit"):
+                        self.conn.commit()
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+            def close(self):
+                manager.release(cfg, self.conn)
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                self.close()
+        return _DirectSession(conn)
 
     def connect(self, cfg: dict[str, Any]):
         backend_name = cfg.get("backend", "mysql")
@@ -224,4 +357,28 @@ class DbSessionManager:
             raise
 
     def stop_all(self) -> None:
+        """Close all pooled database connections and SSH tunnels."""
+        with self._lock:
+            for conns in list(self._available.values()):
+                for conn in conns:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            self._available.clear()
+
+            for conns in list(self._in_use.values()):
+                for conn in conns:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            self._in_use.clear()
+
+            for conn in list(self._connections.values()):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._connections.clear()
         self.tunnels.stop_all()

@@ -540,10 +540,12 @@ class DbProfileDialog(QDialog):
         self.name_in = QLineEdit(e.get("name", ""))
 
         self.backend_in = QComboBox()
-        self.backend_in.addItems(["mysql", "postgresql", "sqlite"])
+        self.backend_in.addItems(["mysql", "postgresql", "sqlite", "redis"])
         cur_backend = str(e.get("backend", "mysql")).lower()
         if cur_backend in ("postgres", "postgresql"):
             self.backend_in.setCurrentText("postgresql")
+        elif cur_backend in ("redis", "keydb"):
+            self.backend_in.setCurrentText("redis")
         elif cur_backend in ("mysql", "sqlite"):
             self.backend_in.setCurrentText(cur_backend)
         else:
@@ -673,10 +675,13 @@ class DbProfileDialog(QDialog):
         if is_sqlite:
             self.use_tunnel.setChecked(False)
         elif backend in ("postgresql", "postgres"):
-            if self.db_port.text().strip() in ("", "3306"):
+            if self.db_port.text().strip() in ("", "3306", "6379"):
                 self.db_port.setText("5432")
+        elif backend in ("redis", "keydb"):
+            if self.db_port.text().strip() in ("", "3306", "5432"):
+                self.db_port.setText("6379")
         elif backend == "mysql":
-            if self.db_port.text().strip() in ("", "5432"):
+            if self.db_port.text().strip() in ("", "5432", "6379"):
                 self.db_port.setText("3306")
 
     def _on_tunnel_toggle(self, *args) -> None:

@@ -49,6 +49,8 @@ from admin_suite.terminal.bridge import (
     WEBENGINE_AVAILABLE,
     TerminalBridge,
 )
+from admin_suite.terminal.native_terminal import NativeTerminalWidget
+
 
 if WEBENGINE_AVAILABLE:
     from PyQt6.QtWebChannel import QWebChannel
@@ -142,23 +144,18 @@ class TerminalBaseTab(QWidget):
         self._build_toolbar(layout, show_reconnect)
         self._setup_shortcuts()
 
-        if not WEBENGINE_AVAILABLE:
-            fallback = QLabel(
-                "PyQt6-WebEngine is required for terminal rendering.\n"
-                "Install it with:\n\n"
-                "pip install PyQt6-WebEngine"
-            )
-            fallback.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(fallback, 1)
-            return
+        use_native = (
+            not WEBENGINE_AVAILABLE
+            or not ensure_xterm_assets(self.services.emit_log)
+            or bool(self.services.config.get("terminal_engine", "") == "native")
+        )
 
-        if not ensure_xterm_assets(self.services.emit_log):
-            fallback = QLabel(
-                "Failed to load xterm.js assets.\n"
-                "Check internet access on first launch."
-            )
-            fallback.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(fallback, 1)
+        if use_native:
+            self.native_view = NativeTerminalWidget(parent=self)
+            self.native_view.send_input.connect(self._on_web_input)
+            self.native_view.resized.connect(self._on_web_resize)
+            layout.addWidget(self.native_view, 1)
+            self._terminal_ready = True
             return
 
         self.view = TerminalWebView()
@@ -435,6 +432,9 @@ class TerminalBaseTab(QWidget):
         """
         Focus terminal view.
         """
+        if hasattr(self, "native_view") and self.native_view is not None:
+            self.native_view.setFocus()
+            return
         force_web_focus(getattr(self, "view", None))
 
     def eventFilter(self, obj, event):
@@ -458,7 +458,7 @@ class TerminalBaseTab(QWidget):
 
     def write_output(self, data: str) -> None:
         """
-        Write output to xterm.js.
+        Write output to xterm.js or native terminal.
 
         Output is buffered until the terminal is ready.
         """
@@ -466,6 +466,10 @@ class TerminalBaseTab(QWidget):
             return
 
         self._output_history.append(data)
+
+        if hasattr(self, "native_view") and self.native_view is not None:
+            self.native_view.write(data)
+            return
 
         if not self._terminal_ready:
             self._pending_output.append(data)
@@ -490,9 +494,13 @@ class TerminalBaseTab(QWidget):
 
     def clear_terminal(self) -> None:
         """
-        Clear xterm.js content.
+        Clear xterm.js or native terminal content.
         """
         self._pending_output.clear()
+
+        if hasattr(self, "native_view") and self.native_view is not None:
+            self.native_view.clear()
+            return
 
         if WEBENGINE_AVAILABLE and hasattr(self, "bridge"):
             clear_signal = getattr(self.bridge, "clear_terminal", None)
@@ -578,6 +586,9 @@ class TerminalBaseTab(QWidget):
         if 8 <= new_size <= 32:
             self.services.config.set("terminal_font_size", new_size)
             self.services.config.save()
+
+            if hasattr(self, "native_view") and self.native_view is not None:
+                self.native_view.set_font_size(new_size)
 
             if WEBENGINE_AVAILABLE and hasattr(self, "bridge"):
                 if hasattr(self.bridge, "set_font_size"):

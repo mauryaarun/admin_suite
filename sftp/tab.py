@@ -22,10 +22,7 @@ from admin_suite.sftp.models import SftpAction, SftpTask
 from admin_suite.sftp.rsync import RsyncDialog
 from admin_suite.sftp.search import RemoteSearchDialog
 from admin_suite.sftp.worker import SftpWorker
-<<<<<<< HEAD
 from admin_suite.sftp.external_editor import ExternalEditorManager
-=======
->>>>>>> 24f9740 (changes in ui)
 
 class SFTPTab(QWidget):
     """SFTP browser tab."""
@@ -74,13 +71,10 @@ class SFTPTab(QWidget):
         # Tasks pane state
         self._tasks_visible: bool = True
 
-<<<<<<< HEAD
         # External editor watcher (FileZilla parity)
         self.external_editor = ExternalEditorManager(self.services, self)
         self.external_editor.file_uploaded.connect(lambda remote_p, local_p: self.remote_panel.refresh())
 
-=======
->>>>>>> 24f9740 (changes in ui)
         theme = self.services.theme.current
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -242,7 +236,9 @@ class SFTPTab(QWidget):
         layout.addLayout(prog_row)
 
         # ---- status ----
-        self.status_label = QLabel("Resolving remote home directory…")
+        user_str = str(self.user or "").strip()
+        default_home = "/root" if user_str == "root" else (f"/home/{user_str}" if user_str else "/")
+        self.status_label = QLabel(f"Remote home: {default_home}")
         self.status_label.setStyleSheet(f"color:{theme['sub']};")
         layout.addWidget(self.status_label)
 
@@ -253,26 +249,38 @@ class SFTPTab(QWidget):
     # Remote home directory resolution
     # ------------------------------------------------------------
     def _resolve_remote_home(self) -> None:
-        self.status_label.setText("Resolving remote home directory…")
-        self._home_probe = RemoteExecThread(
-            self.host_info, "printf '%s' \"$HOME\"", timeout=10
-        )
-        self._home_probe.finished_cmd.connect(self._home_probe_done)
-        self._home_probe.start()
+        user_str = str(self.user or "").strip()
+        default_home = "/root" if user_str == "root" else (f"/home/{user_str}" if user_str else "/")
+        self._console_home = default_home
+        self._console_cwd = default_home
+        self.remote_panel.home_dir = default_home
+        self.remote_panel.current_path = default_home
+        self.remote_panel.path_input.setText(default_home)
+        self.status_label.setText(f"Remote home: {default_home}")
+        self._update_console_prompt()
+        self.remote_panel.refresh()
+
+        try:
+            self._home_probe = RemoteExecThread(
+                self.host_info, "printf '%s' \"$HOME\"", timeout=5
+            )
+            self._home_probe.finished_cmd.connect(self._home_probe_done)
+            self._home_probe.start()
+        except Exception:
+            pass
 
     def _home_probe_done(self, out: str, rc: int) -> None:
         home = out.strip()
         if rc == 0 and home and home.startswith("/"):
-            self._console_home = home
-            self.remote_panel.current_path = home
-            self.remote_panel.path_input.setText(home)
-            self.status_label.setText(f"Remote home: {home}")
-        else:
-            self._console_home = "/"
-            self.status_label.setText("Could not resolve home — using /")
-        self._console_cwd = self.remote_panel.current_path
-        self._update_console_prompt()
-        self.remote_panel.refresh()
+            if home != self._console_home:
+                self._console_home = home
+                self._console_cwd = home
+                self.remote_panel.home_dir = home
+                self.remote_panel.current_path = home
+                self.remote_panel.path_input.setText(home)
+                self.status_label.setText(f"Remote home: {home}")
+                self._update_console_prompt()
+                self.remote_panel.refresh()
 
     # ------------------------------------------------------------
     # Tasks pane toggle
@@ -598,11 +606,8 @@ class SFTPTab(QWidget):
                     self.main_window.tabs.setCurrentIndex(idx)
                 else:
                     tab.show()
-<<<<<<< HEAD
             elif action == "external-edit":
                 self.external_editor.edit_remote_file(path, self.host_info)
-=======
->>>>>>> 24f9740 (changes in ui)
             elif action == "chmod":
                 try:
                     data = json.loads(path)
@@ -735,6 +740,12 @@ class SFTPTab(QWidget):
                 self._active_transfer.wait(1500)
         except Exception:
             pass
+        if getattr(self, "_home_probe", None) is not None:
+            try:
+                if self._home_probe.isRunning():
+                    self._home_probe.wait(200)
+            except Exception:
+                pass
         for worker in list(self._op_workers):
             try:
                 if worker.isRunning():

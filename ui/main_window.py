@@ -103,6 +103,8 @@ from admin_suite.ui.dialogs import (
     SnippetManagerDialog,
     ThemeDialog,
 )
+from admin_suite.ui.workspace import WorkspaceManager
+from admin_suite.ui.task_drawer import TaskStatusBarWidget, TaskDrawerDialog
 
 
 def parse_ssh_config(path: str) -> list[dict[str, Any]]:
@@ -205,9 +207,13 @@ class MainWindow(QMainWindow):
         self._ping_active = 0
         self._ping_max = int(self.services.config.get("ping_max_concurrency", 8))
 
+        # Workspace manager for multi-pane docking and detachment
+        self.workspace_mgr = WorkspaceManager(self)
+
         # UI must be created before loading/refreshing profiles.
         self._init_ui()
         self._init_shortcuts()
+        self._register_actions()
 
         # Load state after widgets exist.
         self.load_profiles()
@@ -523,7 +529,6 @@ class MainWindow(QMainWindow):
         )
         self.broadcast_btn.clicked.connect(self.toggle_broadcast)
 
-<<<<<<< HEAD
         self.admin_console_btn = QPushButton("🖥️ Admin Console")
         self.admin_console_btn.setStyleSheet(
             f"background:{theme.get('accent', '#3daee9')};color:white;padding:6px 12px;font-weight:bold;"
@@ -531,8 +536,6 @@ class MainWindow(QMainWindow):
         self.admin_console_btn.setToolTip("Open Unified Admin Console (SysAdmin, Security, Network, Web, VAPT)")
         self.admin_console_btn.clicked.connect(self.open_admin_console_selected)
 
-=======
->>>>>>> 24f9740 (changes in ui)
         self.vpn_btn = QPushButton("⚡ Connect VPN")
         self.vpn_btn.setStyleSheet(
             f"background:{theme['warn']};color:white;padding:6px 12px;font-weight:bold;"
@@ -644,6 +647,9 @@ class MainWindow(QMainWindow):
         # Native Menu Bar
         self._init_menu_bar()
 
+        self.task_status_widget = TaskStatusBarWidget(self.services, self)
+        self.statusBar().addPermanentWidget(self.task_status_widget)
+
         self.statusBar().showMessage(
             "Ready — double-click a profile · Ctrl+K palette · Ctrl+T terminal · "
             "Ctrl+Shift+V VAPT audit · F8 broadcast · Ctrl+Shift+T reopen"
@@ -671,6 +677,277 @@ class MainWindow(QMainWindow):
             shortcut.activated.connect(callback)
 
             self._sc.append(shortcut)
+
+    def _register_actions(self) -> None:
+        """Register primary application actions into the ActionRegistry."""
+        reg = getattr(self.services, "actions", None)
+        if not reg:
+            return
+
+        reg.register_action(
+            "admin_console.selected",
+            "Open Unified Admin Console (selected profile)",
+            self.open_admin_console_selected,
+            category="Administration",
+            shortcut="Ctrl+Shift+D",
+            icon="🖥️",
+        )
+        reg.register_action(
+            "vpn.config",
+            "Open VPN Configuration & Profiles",
+            lambda: self.open_vpn_config_dialog(0),
+            category="VPN & Mesh",
+            icon="⚙",
+        )
+        reg.register_action(
+            "vpn.wireguard_server",
+            "WireGuard VPN Server Setup on Connected Server",
+            self.open_wireguard_server_setup,
+            category="VPN & Mesh",
+            icon="⚡",
+        )
+        reg.register_action(
+            "vpn.toggle",
+            "VPN Connect / Disconnect Toggle",
+            self.vpn.toggle,
+            category="VPN & Mesh",
+            icon="🔌",
+        )
+        reg.register_action(
+            "sidebar.right_toggle",
+            "Toggle Right Sidebar (Copilot / Event Logs)",
+            self.toggle_right_sidebar,
+            category="Navigation",
+            shortcut="Ctrl+Shift+A",
+            icon="▶",
+        )
+        reg.register_action(
+            "ai.copilot",
+            "Open AI Copilot",
+            lambda: self.toggle_copilot(True),
+            category="Tools",
+            shortcut="Ctrl+I",
+            icon="🤖",
+        )
+        reg.register_action(
+            "logs.events",
+            "Open Event & Audit Logs",
+            lambda: self.toggle_event_logs(True),
+            category="Tools",
+            shortcut="Ctrl+Shift+L",
+            icon="📋",
+        )
+        reg.register_action(
+            "welcome.open",
+            "Open Welcome Screen",
+            self.open_welcome_tab,
+            category="Navigation",
+            icon="🏠",
+        )
+        reg.register_action(
+            "db.manager",
+            "Open Database Manager",
+            self.open_db_manager,
+            category="Database",
+            icon="🗄️",
+        )
+        reg.register_action(
+            "terminal.new",
+            "New Terminal (selected profile)",
+            self._new_terminal_dialog,
+            category="Terminal",
+            shortcut="Ctrl+T",
+            icon="🐚",
+        )
+        reg.register_action(
+            "sftp.open",
+            "Open SFTP (selected profile)",
+            lambda: self.open_sftp(self._get_selected_profile_name()),
+            category="Files & SFTP",
+            icon="📁",
+        )
+        reg.register_action(
+            "sysadmin.selected",
+            "Open SysAdmin Dashboard (selected profile)",
+            self.open_sysadmin_selected,
+            category="Administration",
+            icon="📊",
+        )
+        reg.register_action(
+            "sysadmin.local",
+            "Open SysAdmin Dashboard (Localhost)",
+            self.open_sysadmin_local,
+            category="Administration",
+            icon="📊",
+        )
+        reg.register_action(
+            "web.selected",
+            "Open Web Hosting Manager (selected profile)",
+            self.open_web_manager_selected,
+            category="Administration",
+            icon="🌐",
+        )
+        reg.register_action(
+            "web.local",
+            "Open Web Hosting Manager (Localhost)",
+            self.open_web_manager_local,
+            category="Administration",
+            icon="🌐",
+        )
+        reg.register_action(
+            "security.selected",
+            "Open Security Hub (selected profile)",
+            self.open_security_hub_selected,
+            category="Security",
+            icon="🛡️",
+        )
+        reg.register_action(
+            "security.local",
+            "Open Security Hub (Localhost)",
+            self.open_security_hub_local,
+            category="Security",
+            icon="🛡️",
+        )
+        reg.register_action(
+            "vapt.audit",
+            "Open VAPT & Web Security Audit",
+            lambda: self.open_vapt_tab(),
+            category="Security",
+            shortcut="Ctrl+Shift+V",
+            icon="🔍",
+        )
+        reg.register_action(
+            "tunnel.forwarding",
+            "Port Forwarding & Tunnels (selected profile)",
+            lambda: self.open_port_forwarding(),
+            category="VPN & Mesh",
+            icon="🔌",
+        )
+        reg.register_action(
+            "terminal.split",
+            "Split Terminal (selected profile)",
+            self.open_split_selected,
+            category="Terminal",
+            icon="🪟",
+        )
+        reg.register_action(
+            "ansible.multihost",
+            "Ansible & Multi-Host Runner",
+            self.open_ansible_tab,
+            category="Automation",
+            icon="🤖",
+        )
+        reg.register_action(
+            "ansible.playbook",
+            "Ansible Playbook / Vault Runner",
+            self.open_ansible_playbook_tab,
+            category="Automation",
+            icon="📜",
+        )
+        reg.register_action(
+            "terminal.local_shell",
+            "Local Shell",
+            lambda: self.add_local_command_tab("bash", "Local Shell"),
+            category="Terminal",
+            icon="⚡",
+        )
+        reg.register_action(
+            "terminal.broadcast",
+            "Toggle Broadcast Mode",
+            self.toggle_broadcast,
+            category="Terminal",
+            shortcut="F8",
+            icon="📢",
+        )
+        reg.register_action(
+            "palette.open",
+            "Command Palette",
+            self.open_palette,
+            category="Navigation",
+            shortcut="Ctrl+K",
+            icon="⌘",
+        )
+        reg.register_action(
+            "settings.connection",
+            "Connection Manager",
+            self.open_config,
+            category="Settings",
+            shortcut="Ctrl+,",
+            icon="⚙",
+        )
+        reg.register_action(
+            "settings.theme",
+            "Theme Manager",
+            self.open_theme_dialog,
+            category="Settings",
+            icon="🎨",
+        )
+        reg.register_action(
+            "tools.snippets",
+            "Snippets Library",
+            self.open_snippets,
+            category="Tools",
+            icon="📝",
+        )
+        reg.register_action(
+            "tools.key_manager",
+            "SSH Key Manager",
+            lambda: KeyManagerDialog(self, self.services).exec(),
+            category="Tools",
+            icon="🔑",
+        )
+        reg.register_action(
+            "tools.import_ssh_config",
+            "Import ~/.ssh/config",
+            self.import_ssh_config,
+            category="Tools",
+            icon="📥",
+        )
+        reg.register_action(
+            "tools.recordings",
+            "Session Recordings",
+            lambda: SessionLogViewerDialog(self, self.services).exec(),
+            category="Tools",
+            icon="🎬",
+        )
+        reg.register_action(
+            "tools.notifications",
+            "Notification Center",
+            lambda: NotificationCenterDialog(self, self.services).exec(),
+            category="Tools",
+            icon="🔔",
+        )
+        reg.register_action(
+            "sidebar.left_toggle",
+            "Toggle Left Sidebar",
+            self.toggle_sidebar,
+            category="Navigation",
+            shortcut="Ctrl+B",
+            icon="◀",
+        )
+        reg.register_action(
+            "profiles.ping_all",
+            "Ping All Profiles",
+            self._ping_all_profiles,
+            category="Profiles",
+            icon="📡",
+        )
+        reg.register_action(
+            "tabs.reopen_closed",
+            "Reopen Closed Tab",
+            self._reopen_closed_tab,
+            category="Navigation",
+            shortcut="Ctrl+Shift+T",
+            icon="🔄",
+        )
+        reg.register_action(
+            "tasks.open",
+            "Open Background Task Center",
+            lambda: TaskDrawerDialog(self.services, self).exec(),
+            category="Tools",
+            shortcut="Ctrl+Shift+J",
+            icon="⏳",
+        )
 
     def _init_menu_bar(self) -> None:
         menubar = self.menuBar()
@@ -1024,7 +1301,6 @@ class MainWindow(QMainWindow):
             p_name = f" ({prof.get('name')})" if prof else ""
 
             if connected:
-<<<<<<< HEAD
                 text = f"🔌 Disconnect{p_name}"
                 status = f"● VPN{p_name}: Connected ✅"
                 color = theme["ok"]
@@ -1032,15 +1308,6 @@ class MainWindow(QMainWindow):
             else:
                 text = f"⚡ Connect{p_name}"
                 status = f"● VPN{p_name}: Disconnected"
-=======
-                text = "🔌 Disconnect VPN"
-                status = "● VPN: Connected ✅"
-                color = theme["ok"]
-
-            else:
-                text = "⚡ Connect VPN"
-                status = "● VPN: Disconnected"
->>>>>>> 24f9740 (changes in ui)
                 color = theme["warn"]
 
         self.vpn_btn.setText(text)
@@ -2295,12 +2562,29 @@ class MainWindow(QMainWindow):
 
         return tab
 
-    def open_admin_console(self, name: str = "", initial_category: Optional[str] = None) -> AdminConsoleTab:
+    def open_admin_console(self, name: str = "", initial_category: Optional[str] = None, auto_refresh: bool = True) -> AdminConsoleTab:
         if not name:
             name = self._get_selected_profile_name() or "Localhost"
         data = self.profiles.get(name)
         if not data and name.lower() in ("localhost", "local"):
             data = self.profiles.get("localhost") or self.profiles.get("Localhost")
+
+        # Reuse existing open tab if available
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, AdminConsoleTab) and widget.profile_name.lower() == name.lower():
+                if initial_category and hasattr(widget, "master_tabs"):
+                    cat_map = {
+                        "system": 0, "sysadmin": 0,
+                        "security": 1,
+                        "network": 2, "vpn": 2,
+                        "web": 3, "hosting": 3,
+                        "vapt": 4, "recon": 4,
+                    }
+                    target_idx = cat_map.get(initial_category.lower(), 0)
+                    widget.master_tabs.setCurrentIndex(target_idx)
+                self.tabs.setCurrentIndex(i)
+                return widget
 
         self.services.emit_log("ADMIN", f"Opened Admin Console for: {name} (Category: {initial_category or 'Default'})", "INFO")
         tab = AdminConsoleTab(
@@ -2308,6 +2592,7 @@ class MainWindow(QMainWindow):
             name,
             data,
             initial_category=initial_category,
+            auto_refresh=auto_refresh,
             parent=self,
         )
         cat_suffix = f" [{initial_category.title()}]" if initial_category else ""
@@ -2544,7 +2829,10 @@ class MainWindow(QMainWindow):
         if index < 0 or self._is_permanent_tab(self.tabs.widget(index)):
             return
 
-        menu = QMenu(self)
+        menu.addAction("🗔 Pop Out to Floating Window").triggered.connect(
+            lambda: self.workspace_mgr.detach_tab(self.tabs, index)
+        )
+        menu.addSeparator()
 
         menu.addAction("✏️ Rename").triggered.connect(
             lambda: self._rename_tab(index)
@@ -2840,124 +3128,15 @@ class MainWindow(QMainWindow):
         CommandPaletteDialog(self, self._build_commands()).exec()
 
     def _build_commands(self):
-        commands = [
-            {
-                "name": "Open Unified Admin Console (selected profile)",
-                "hint": "Ctrl+Shift+D",
-                "cb": self.open_admin_console_selected,
-            },
-            {
-                "name": "Open VPN Configuration & Profiles",
-                "cb": lambda: self.open_vpn_config_dialog(0),
-            },
-            {
-                "name": "WireGuard VPN Server Setup on Connected Server",
-                "cb": self.open_wireguard_server_setup,
-            },
-            {"name": "VPN Toggle", "cb": self.vpn.toggle},
-            {
-                "name": "Toggle Right Sidebar",
-                "hint": "Ctrl+Shift+A",
-                "cb": self.toggle_right_sidebar,
-            },
-            {
-                "name": "Open AI Copilot",
-                "hint": "Ctrl+I",
-                "cb": lambda: self.toggle_copilot(True),
-            },
-            {
-                "name": "Open Event & Audit Logs",
-                "hint": "Ctrl+Shift+L",
-                "cb": lambda: self.toggle_event_logs(True),
-            },
-            {
-                "name": "Open Welcome Screen",
-                "cb": self.open_welcome_tab,
-            },
-            {
-                "name": "Open Database Manager",
-                "cb": self.open_db_manager,
-            },
-            {
-                "name": "New Terminal (selected profile)",
-                "hint": "Ctrl+T",
-                "cb": self._new_terminal_dialog,
-            },
-            {
-                "name": "Open SFTP (selected profile)",
-                "cb": lambda: self.open_sftp(self._get_selected_profile_name()),
-            },
-            {
-                "name": "Open SysAdmin Dashboard (selected profile)",
-                "cb": self.open_sysadmin_selected,
-            },
-            {
-                "name": "Open SysAdmin Dashboard (Localhost)",
-                "cb": self.open_sysadmin_local,
-            },
-            {
-                "name": "Open Web Hosting Manager (selected profile)",
-                "cb": self.open_web_manager_selected,
-            },
-            {
-                "name": "Open Web Hosting Manager (Localhost)",
-                "cb": self.open_web_manager_local,
-            },
-            {
-                "name": "Open Security Hub (selected profile)",
-                "cb": self.open_security_hub_selected,
-            },
-            {
-                "name": "Open Security Hub (Localhost)",
-                "cb": self.open_security_hub_local,
-            },
-            {
-                "name": "Open VAPT & Web Security Audit",
-                "hint": "Ctrl+Shift+V",
-                "cb": lambda: self.open_vapt_tab(),
-            },
-            {
-                "name": "Port Forwarding & Tunnels (selected profile)",
-                "cb": lambda: self.open_port_forwarding(),
-            },
-            {
-                "name": "Split Terminal (selected profile)",
-                "cb": self.open_split_selected,
-            },
-            {"name": "Ansible & Multi-Host Runner", "cb": self.open_ansible_tab},
-            {"name": "Ansible Playbook/Vault Runner", "cb": self.open_ansible_playbook_tab},
-            {
-                "name": "Local Shell",
-                "cb": lambda: self.add_local_command_tab("bash", "Local Shell"),
-            },
-            {"name": "Toggle Broadcast Mode", "hint": "F8", "cb": self.toggle_broadcast},
-            {"name": "Command Palette", "hint": "Ctrl+K", "cb": self.open_palette},
-            {"name": "Connection Manager", "hint": "Ctrl+,", "cb": self.open_config},
-            {"name": "Theme Manager", "cb": self.open_theme_dialog},
-            {"name": "Snippets Library", "cb": self.open_snippets},
-            {
-                "name": "SSH Key Manager",
-                "cb": lambda: KeyManagerDialog(self, self.services).exec(),
-            },
-            {"name": "Import ~/.ssh/config", "cb": self.import_ssh_config},
-            {
-                "name": "Session Recordings",
-                "cb": lambda: SessionLogViewerDialog(self, self.services).exec(),
-            },
-            {
-                "name": "Notification Center",
-                "cb": lambda: NotificationCenterDialog(self, self.services).exec(),
-            },
-            {"name": "Toggle Sidebar", "hint": "Ctrl+B", "cb": self.toggle_sidebar},
-            {"name": "Ping All Profiles", "cb": self._ping_all_profiles},
-            {"name": "Reopen Closed Tab", "hint": "Ctrl+Shift+T", "cb": self._reopen_closed_tab},
-        ]
+        reg = getattr(self.services, "actions", None)
+        commands = reg.to_palette_items() if reg else []
 
         for name in self.profiles:
             commands.append(
                 {
                     "name": f"Connect: {name}",
                     "hint": "terminal",
+                    "category": "Profiles",
                     "cb": lambda n=name: self.connect_profile(n),
                 }
             )
@@ -2966,6 +3145,7 @@ class MainWindow(QMainWindow):
                 {
                     "name": f"SFTP: {name}",
                     "hint": "files",
+                    "category": "Files & SFTP",
                     "cb": lambda n=name: self.open_sftp(n),
                 }
             )
@@ -2974,6 +3154,7 @@ class MainWindow(QMainWindow):
                 {
                     "name": f"SysAdmin: {name}",
                     "hint": "dashboard",
+                    "category": "Administration",
                     "cb": lambda n=name: self.open_sysadmin(n),
                 }
             )
@@ -2982,6 +3163,7 @@ class MainWindow(QMainWindow):
                 {
                     "name": f"Web: {name}",
                     "hint": "hosting",
+                    "category": "Administration",
                     "cb": lambda n=name: self.open_web_manager(n),
                 }
             )
@@ -2990,6 +3172,7 @@ class MainWindow(QMainWindow):
                 {
                     "name": f"Security: {name}",
                     "hint": "firewall/fail2ban/audit",
+                    "category": "Security",
                     "cb": lambda n=name: self.open_security_hub(n),
                 }
             )
@@ -2998,6 +3181,7 @@ class MainWindow(QMainWindow):
                 {
                     "name": f"Port Forwarding: {name}",
                     "hint": "ssh tunnels",
+                    "category": "VPN & Mesh",
                     "cb": lambda n=name: self.open_port_forwarding(n),
                 }
             )
@@ -3006,6 +3190,7 @@ class MainWindow(QMainWindow):
             {
                 "name": "Add DB Profile",
                 "hint": "database",
+                "category": "Database",
                 "cb": self.add_db_profile,
             }
         )
@@ -3015,6 +3200,7 @@ class MainWindow(QMainWindow):
                 {
                     "name": f"Connect DB: {name}",
                     "hint": "database",
+                    "category": "Database",
                     "cb": lambda n=name: self.activate_db_profile(n),
                 }
             )
@@ -3209,12 +3395,24 @@ class MainWindow(QMainWindow):
 
             if widget is not None and not self._is_permanent_tab(widget):
                 try:
+                    if hasattr(widget, "stop_all_workers"):
+                        widget.stop_all_workers()
                     widget.close()
                 except Exception:
                     pass
 
         try:
             self.db_manager_widget.session_manager.stop_all()
+        except Exception:
+            pass
+
+        try:
+            self.workspace_mgr.close_all_detached()
+        except Exception:
+            pass
+
+        try:
+            self.services.shutdown()
         except Exception:
             pass
 

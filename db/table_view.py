@@ -45,6 +45,8 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -258,10 +260,68 @@ class CellInspectorDialog(QDialog):
                 pass
 
 
+class PendingChangesReviewDialog(QDialog):
+    """
+    Modal dialog allowing users to inspect all pending cell modifications,
+    verify generated SQL UPDATE statements, and confirm execution.
+    """
+
+    def __init__(self, changes: list[dict[str, Any]], statements: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Review Pending Database Changes")
+        self.resize(720, 480)
+        self.statements = statements
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        lbl = QLabel(
+            f"<b>{len(changes)} modified cell(s) detected.</b> Review changes and generated SQL before applying:"
+        )
+        layout.addWidget(lbl)
+
+        # Table diff
+        diff_table = QTableWidget(len(changes), 4)
+        diff_table.setHorizontalHeaderLabels(["Row", "Column", "Original Value", "New Value"])
+        diff_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for i, chg in enumerate(changes):
+            diff_table.setItem(i, 0, QTableWidgetItem(str(chg["row"] + 1)))
+            diff_table.setItem(i, 1, QTableWidgetItem(str(chg["column_name"])))
+            diff_table.setItem(i, 2, QTableWidgetItem(str(chg["old_value"])))
+            diff_table.setItem(i, 3, QTableWidgetItem(str(chg["new_value"])))
+        layout.addWidget(diff_table, 1)
+
+        # SQL Preview
+        lbl_sql = QLabel("<b>Generated SQL Statements:</b>")
+        layout.addWidget(lbl_sql)
+        sql_edit = QPlainTextEdit()
+        sql_edit.setReadOnly(True)
+        sql_edit.setPlainText("\n".join(statements))
+        sql_edit.setMaximumHeight(130)
+        layout.addWidget(sql_edit)
+
+        # Actions
+        btn_box = QHBoxLayout()
+        btn_cancel = QPushButton("❌ Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_box.addWidget(btn_cancel)
+
+        btn_box.addStretch()
+
+        btn_apply = QPushButton("🚀 Apply Changes")
+        btn_apply.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 6px 14px;")
+        btn_apply.clicked.connect(self.accept)
+        btn_box.addWidget(btn_apply)
+
+        layout.addLayout(btn_box)
+
+
 class EnhancedTableDataWidget(QWidget):
     """
     Complete Table Data View with:
       - Sorting on all columns with type-awareness
+      - Inline in-place cell editing with dirty-state tracking
+      - Batch review and atomic SQL UPDATE execution
       - Per-field filter inputs in a synchronized filter row
       - Push filters to SQL WHERE generator
       - Right-click cell actions & filter
@@ -272,11 +332,16 @@ class EnhancedTableDataWidget(QWidget):
 
     request_reload = pyqtSignal()  # trigger server reload
     where_clause_generated = pyqtSignal(str)  # emitted when user pushes filters to SQL WHERE
+    commit_updates_requested = pyqtSignal(list)  # emitted with list of generated SQL UPDATE queries
 
     def __init__(self, services, parent=None):
         super().__init__(parent)
         self.services = services
         self.theme = self.services.theme.current
+
+        self.table_name: str = ""
+        self.pk_column: Optional[str] = None
+        self.quote_char: str = '"'
 
         self._headers: list[str] = []
         self._filter_edits: list[QLineEdit] = []
@@ -312,6 +377,25 @@ class EnhancedTableDataWidget(QWidget):
         self.btn_push_where.clicked.connect(self._push_filters_to_sql_where)
         top_bar.addWidget(self.btn_push_where)
 
+        # Inline editing action buttons
+        self.btn_edit_mode = QPushButton("✏️ Edit Grid")
+        self.btn_edit_mode.setCheckable(True)
+        self.btn_edit_mode.setToolTip("Enable in-place cell editing with dirty-state tracking")
+        self.btn_edit_mode.toggled.connect(self._toggle_edit_mode)
+        top_bar.addWidget(self.btn_edit_mode)
+
+        self.btn_commit = QPushButton("💾 Commit (0)")
+        self.btn_commit.setEnabled(False)
+        self.btn_commit.setToolTip("Review and apply cell modifications")
+        self.btn_commit.clicked.connect(self._on_commit_clicked)
+        top_bar.addWidget(self.btn_commit)
+
+        self.btn_revert = QPushButton("↩️ Revert")
+        self.btn_revert.setEnabled(False)
+        self.btn_revert.setToolTip("Discard all uncommitted cell edits")
+        self.btn_revert.clicked.connect(self.revert_changes)
+        top_bar.addWidget(self.btn_revert)
+
         layout.addLayout(top_bar)
 
         # ------------------------------------------------------------
@@ -340,6 +424,7 @@ class EnhancedTableDataWidget(QWidget):
         self.data_table.setSortingEnabled(True)
 
         self.source_model = SqlResultModel()
+        self.source_model.dirty_changed.connect(self._on_dirty_count_changed)
         self.proxy_model = SmartSortFilterProxyModel(self)
         self.proxy_model.setSourceModel(self.source_model)
         self.data_table.setModel(self.proxy_model)
@@ -568,7 +653,59 @@ class EnhancedTableDataWidget(QWidget):
 
         self.stats_label.setText(" | ".join(stat_parts))
 
+    def set_table_context(self, table_name: str, pk_column: Optional[str] = None, quote_char: str = '"') -> None:
+        self.table_name = table_name
+        self.pk_column = pk_column
+        self.quote_char = quote_char
+
+    def _toggle_edit_mode(self, enabled: bool) -> None:
+        self.source_model.set_editable(enabled)
+        if enabled:
+            self.data_table.setEditTriggers(
+                QTableView.EditTrigger.DoubleClicked
+                | QTableView.EditTrigger.EditKeyPressed
+                | QTableView.EditTrigger.AnyKeyPressed
+            )
+        else:
+            self.data_table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+
+    def _on_dirty_count_changed(self, count: int) -> None:
+        self.btn_commit.setText(f"💾 Commit ({count})")
+        self.btn_commit.setEnabled(count > 0)
+        self.btn_revert.setEnabled(count > 0)
+
+    def revert_changes(self) -> None:
+        if not self.source_model.is_dirty():
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Revert Changes",
+                "Discard all unsaved edits in this table?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.source_model.revert_changes()
+
+    def _on_commit_clicked(self) -> None:
+        if not self.source_model.is_dirty():
+            return
+
+        changes = self.source_model.get_dirty_changes()
+        statements = self.source_model.generate_update_sql(
+            self.table_name or "table",
+            pk_column=self.pk_column,
+            quote_char=self.quote_char,
+        )
+
+        dlg = PendingChangesReviewDialog(changes, statements, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.commit_updates_requested.emit(statements)
+
     def _on_cell_double_clicked(self, proxy_idx: QModelIndex):
+        if self.source_model.editable:
+            return  # Let Qt open the in-place editor
         src_idx = self.proxy_model.mapToSource(proxy_idx)
         col_name = self._headers[src_idx.column()] if src_idx.column() < len(self._headers) else f"Col {src_idx.column()}"
         val = self.source_model.value(src_idx.row(), src_idx.column())

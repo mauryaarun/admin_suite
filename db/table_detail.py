@@ -148,6 +148,7 @@ class TableDetailTab(QWidget):
         self.data_model = self.enhanced_data_view.source_model
         self.data_table.doubleClicked.connect(self.update_record)
         self.enhanced_data_view.where_clause_generated.connect(self._on_where_clause_pushed)
+        self.enhanced_data_view.commit_updates_requested.connect(self._on_batch_commit_updates)
         data_layout.addWidget(self.enhanced_data_view, 1)
 
         self.row_label = QLabel("")
@@ -202,7 +203,10 @@ class TableDetailTab(QWidget):
 
         self.schema_tree.clear()
 
+        pk_col = None
         for col in columns:
+            if col.get("Key") == "PRI" and pk_col is None:
+                pk_col = col.get("Field")
             self.schema_tree.addTopLevelItem(
                 QTreeWidgetItem(
                     [
@@ -215,6 +219,15 @@ class TableDetailTab(QWidget):
                     ]
                 )
             )
+
+        self.enhanced_data_view.set_table_context(self.table_name, pk_column=pk_col)
+
+    def _on_batch_commit_updates(self, statements: list[str]) -> None:
+        if not statements:
+            return
+        sql = "\n".join(statements)
+        self._execute_crud(sql, [])
+
 
     def load_data(self) -> None:
         self.row_label.setText("Loading...")

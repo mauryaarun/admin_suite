@@ -64,6 +64,16 @@ from admin_suite.core.theme import (
     ThemeManager,
 )
 
+from admin_suite.core.action_registry import (
+    Action,
+    ActionRegistry,
+)
+
+from admin_suite.core.task_manager import (
+    BackgroundTask,
+    TaskManager,
+)
+
 __all__ = [
     "APP_NAME",
     "CONFIG_FILE",

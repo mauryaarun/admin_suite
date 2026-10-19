@@ -30,7 +30,7 @@ class SQLiteBackend:
                 "Set it in Connection Manager → Database."
             )
 
-        conn = sqlite3.connect(path, timeout=15)
+        conn = sqlite3.connect(path, timeout=15, check_same_thread=False)
         conn.row_factory = sqlite3.Row
 
         return conn

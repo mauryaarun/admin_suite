@@ -47,6 +47,10 @@ from admin_suite.terminal.split_tab import (
     SplitTerminalTab,
 )
 
+from admin_suite.terminal.native_terminal import (
+    NativeTerminalWidget,
+)
+
 __all__ = [
     "ensure_xterm_assets",
     "shared_terminal_html_path",
@@ -56,6 +60,7 @@ __all__ = [
     "LocalTerminalWorker",
     "TerminalBaseTab",
     "TerminalWebView",
+    "NativeTerminalWidget",
     "force_web_focus",
     "SshTerminalTab",
     "LocalTerminalTab",

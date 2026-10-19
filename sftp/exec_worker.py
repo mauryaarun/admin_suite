@@ -14,6 +14,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from admin_suite.ssh.client import ssh_kwargs
 from admin_suite.ssh.credentials import SshCredentials
 from admin_suite.ssh.hostkeys import create_ssh_client
+from admin_suite.ssh.pool import get_ssh_pool
 
 
 class RemoteExecThread(QThread):
@@ -65,35 +66,12 @@ class RemoteExecThread(QThread):
 
                 return
 
-            client = create_ssh_client(
-                strict=self.host_info.get("strict_host_keys", False)
-            )
-
-            creds = self.host_info.get("creds") or SshCredentials()
-
-            kw = ssh_kwargs(
-                self.host_info.get("host", ""),
-                self.host_info.get("port", 22),
-                self.host_info.get("user", ""),
-                creds,
-                use_agent=self.host_info.get("use_agent", False),
-            )
-
-            kw["timeout"] = 10
-
-            client.connect(**kw)
-
-            stdin, stdout, stderr = client.exec_command(
+            pool = get_ssh_pool()
+            out, err, rc = pool.execute(
+                self.host_info,
                 self.cmd,
                 timeout=self.timeout,
             )
-
-            out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
-            rc = stdout.channel.recv_exit_status()
-
-            client.close()
-
             self.finished_cmd.emit(out + err, rc)
 
         except Exception as e:

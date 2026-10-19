@@ -84,25 +84,44 @@ class _ConsoleLocalExecThread(QThread):
         self.cmd = cmd
         self.timeout = timeout
         self.sudo_password = sudo_password
+        self._proc: Optional[subprocess.Popen] = None
+        self._stopped = False
+
+    def stop(self) -> None:
+        self._stopped = True
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
 
     def run(self) -> None:
         try:
-            p = subprocess.Popen(
+            self._proc = subprocess.Popen(
                 ["bash", "-c", self.cmd],
                 stdin=subprocess.PIPE if self.sudo_password else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            out, err = p.communicate(
+            out, err = self._proc.communicate(
                 input=(self.sudo_password + "\n") if self.sudo_password else None,
                 timeout=self.timeout,
             )
-            self.finished_cmd.emit(out or "", err or "", p.returncode if p.returncode is not None else 0)
+            if not self._stopped:
+                self.finished_cmd.emit(out or "", err or "", self._proc.returncode if self._proc.returncode is not None else 0)
         except subprocess.TimeoutExpired:
-            self.finished_cmd.emit("", "[Command timed out]\n", 124)
+            if self._proc:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            if not self._stopped:
+                self.finished_cmd.emit("", "[Command timed out]\n", 124)
         except Exception as exc:
-            self.finished_cmd.emit("", f"[Execution error] {exc}\n", 1)
+            if not self._stopped:
+                self.finished_cmd.emit("", f"[Execution error] {exc}\n", 1)
+
 
 
 class AdminConsoleTab(QWidget):
@@ -216,7 +235,11 @@ class AdminConsoleTab(QWidget):
         self.master_tabs.addTab(self.security_widget, "🛡️ Security")
 
         # Category 3: 🌐 Network & VPN Admin
-        self.network_widget = NetworkAdminWidget(run_cmd_fn=self.execute_command, theme=self.theme, parent=self)
+        self.network_widget = NetworkAdminWidget(
+            run_cmd_fn=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
         self.master_tabs.addTab(self.network_widget, "🌐 Network & VPN")
 
         # Category 4: 🌍 Web & Hosting
@@ -365,6 +388,7 @@ class AdminConsoleTab(QWidget):
                     callback(output, err, rc)
 
             worker.finished_cmd.connect(on_remote_done)
+            worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
             self._workers.append(worker)
             worker.start()
 
@@ -388,8 +412,29 @@ class AdminConsoleTab(QWidget):
                     callback(stdout, stderr, rc)
 
             worker.finished_cmd.connect(on_local_done)
+            worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
             self._workers.append(worker)
             worker.start()
+
+    def _cleanup_worker(self, worker: QThread) -> None:
+        if worker in self._workers:
+            try:
+                self._workers.remove(worker)
+            except ValueError:
+                pass
+
+    def stop_all_workers(self) -> None:
+        for w in list(self._workers):
+            if hasattr(w, "stop"):
+                w.stop()
+            w.quit()
+            w.wait(300)
+        self._workers.clear()
+
+    def closeEvent(self, event) -> None:
+        self.stop_all_workers()
+        super().closeEvent(event)
+
 
     def _on_terminal_adhoc_cmd(self, cmd: str, use_sudo: bool):
         """Executed when user types directly in Terminal Output Pane."""
@@ -552,16 +597,24 @@ class AdminConsoleTab(QWidget):
         sec_tabs = QTabWidget()
 
         # Firewall
-        self.firewall_tab = FirewallManagerWidget(run_cmd=self.execute_command, theme=self.theme, parent=self)
+        self.firewall_tab = FirewallManagerWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
         sec_tabs.addTab(self.firewall_tab, "🛡️ Firewall (UFW / Firewalld)")
 
         # Fail2ban
-        self.fail2ban_tab = Fail2banManagerWidget(run_cmd=self.execute_command, theme=self.theme, parent=self)
+        self.fail2ban_tab = Fail2banManagerWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
         sec_tabs.addTab(self.fail2ban_tab, "🚨 Intrusion Defense (Fail2ban)")
 
         # Port Exposure
         self.exposure_tab = PortExposureWidget(
-            run_cmd=self.execute_command,
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
             theme=self.theme,
             on_block_port_cb=lambda p, proto: self.firewall_tab.add_rule(p, proto, "deny"),
             parent=self,
@@ -569,15 +622,27 @@ class AdminConsoleTab(QWidget):
         sec_tabs.addTab(self.exposure_tab, "🌐 Port Exposure & Connections")
 
         # Hardening
-        self.auditor_tab = HardeningAuditorWidget(run_cmd=self.execute_command, theme=self.theme, parent=self)
+        self.auditor_tab = HardeningAuditorWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
         sec_tabs.addTab(self.auditor_tab, "🔒 SSH & Host Hardening")
 
         # Malware & Rootkits
-        self.malware_tab = MalwareScannerWidget(run_cmd=self.execute_command, theme=self.theme, parent=self)
+        self.malware_tab = MalwareScannerWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
         sec_tabs.addTab(self.malware_tab, "🦠 Malware & Rootkits")
 
         # SSL Auditor
-        self.ssl_tab = SSLAuditorWidget(run_cmd=self.execute_command, theme=self.theme, parent=self)
+        self.ssl_tab = SSLAuditorWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
         sec_tabs.addTab(self.ssl_tab, "📜 SSL / TLS Auditor")
 
         layout.addWidget(sec_tabs)

@@ -18,10 +18,13 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -34,6 +37,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.ai.llm_client import UniversalLlmClient
 from admin_suite.ai.ollama_client import OllamaClient
 from admin_suite.core.export import ReportExporter
 
@@ -55,6 +59,65 @@ class _GenSignals(QObject):
     error = pyqtSignal(str)
 
 
+class AiSettingsDialog(QDialog):
+    """Configuration dialog for AI Provider, endpoint URL, and API key."""
+
+    def __init__(self, services, parent=None):
+        super().__init__(parent)
+        self.services = services
+        self.setWindowTitle("AI Copilot Settings")
+        self.resize(460, 240)
+
+        layout = QFormLayout(self)
+        layout.setSpacing(10)
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["Ollama (Local)", "OpenAI / Compatible", "Anthropic Claude", "Google Gemini"])
+
+        cur_provider = self.services.config.get("ai_provider", "ollama").lower()
+        prov_map = {"ollama": 0, "openai": 1, "openrouter": 1, "groq": 1, "deepseek": 1, "anthropic": 2, "gemini": 3}
+        self.provider_combo.setCurrentIndex(prov_map.get(cur_provider, 0))
+
+        self.base_url_edit = QLineEdit(self.services.config.get("ai_base_url", ""))
+        self.base_url_edit.setPlaceholderText("Default: http://127.0.0.1:11434 or https://api.openai.com/v1")
+
+        self.api_key_edit = QLineEdit(self.services.secrets.get("ai_api_key", ""))
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_edit.setPlaceholderText("Optional for local Ollama, required for cloud APIs")
+
+        self.model_edit = QLineEdit(self.services.config.get("ai_default_model", ""))
+        self.model_edit.setPlaceholderText("e.g. llama3, gpt-4o-mini, claude-3-5-sonnet-latest")
+
+        layout.addRow("AI Provider:", self.provider_combo)
+        layout.addRow("API Base URL:", self.base_url_edit)
+        layout.addRow("API Key:", self.api_key_edit)
+        layout.addRow("Default Model:", self.model_edit)
+
+        # Buttons
+        btn_box = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_save = QPushButton("Save Settings")
+        btn_save.setStyleSheet("background-color: #3daee9; color: white; font-weight: bold; padding: 6px 14px;")
+        btn_save.clicked.connect(self._save_settings)
+        btn_box.addWidget(btn_cancel)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_save)
+        layout.addRow("", btn_box)
+
+    def _save_settings(self):
+        prov_keys = ["ollama", "openai", "anthropic", "gemini"]
+        selected_prov = prov_keys[self.provider_combo.currentIndex()]
+        self.services.config.set("ai_provider", selected_prov)
+        self.services.config.set("ai_base_url", self.base_url_edit.text().strip())
+        self.services.config.set("ai_default_model", self.model_edit.text().strip())
+        self.services.config.save()
+
+        key = self.api_key_edit.text().strip()
+        self.services.secrets.set("ai_api_key", key)
+        self.accept()
+
+
 class AIAssistantTab(QWidget):
     """
     Intelligent AI Copilot right-sidebar widget.
@@ -67,7 +130,11 @@ class AIAssistantTab(QWidget):
         super().__init__(parent or main_window)
         self.services = services
         self.main_window = main_window
-        self.client = OllamaClient()
+
+        provider = self.services.config.get("ai_provider", "ollama")
+        base_url = self.services.config.get("ai_base_url", None)
+        api_key = self.services.secrets.get("ai_api_key", "")
+        self.client = UniversalLlmClient(provider=provider, base_url=base_url, api_key=api_key)
 
         self._cancel_flag = False
         self._worker_thread: Optional[threading.Thread] = None
@@ -132,9 +199,15 @@ class AIAssistantTab(QWidget):
 
         self.ping_btn = QToolButton()
         self.ping_btn.setText("🔌")
-        self.ping_btn.setToolTip("Test connection to Ollama (127.0.0.1:11434)")
+        self.ping_btn.setToolTip("Test connection to configured AI endpoint")
         self.ping_btn.clicked.connect(self.test_connection)
         header_bar.addWidget(self.ping_btn)
+
+        self.settings_btn = QToolButton()
+        self.settings_btn.setText("⚙️")
+        self.settings_btn.setToolTip("Configure AI Provider, API Endpoint & Key")
+        self.settings_btn.clicked.connect(self._open_ai_settings_dialog)
+        header_bar.addWidget(self.settings_btn)
 
         self.close_btn = QToolButton()
         self.close_btn.setText("✖")
@@ -490,6 +563,15 @@ class AIAssistantTab(QWidget):
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
         self.status_label.setText(f"✅ {len(names)} model(s) ready.")
+
+    def _open_ai_settings_dialog(self) -> None:
+        dlg = AiSettingsDialog(self.services, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            provider = self.services.config.get("ai_provider", "ollama")
+            base_url = self.services.config.get("ai_base_url", None)
+            api_key = self.services.secrets.get("ai_api_key", "")
+            self.client.configure(provider=provider, base_url=base_url, api_key=api_key)
+            self._refresh_models()
 
     def _on_models_error(self, err: str):
         self.refresh_models_btn.setEnabled(True)

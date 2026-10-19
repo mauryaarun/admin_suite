@@ -11,7 +11,22 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from admin_suite.db.backends import BACKENDS
 from admin_suite.db.session import DbSessionManager
 import os
+import threading
 import time
+
+
+_CONN_LOCKS: dict[int, threading.Lock] = {}
+_CONN_LOCKS_GUARD = threading.Lock()
+
+
+def _get_conn_lock(conn: Any) -> threading.Lock:
+    key = id(conn)
+    with _CONN_LOCKS_GUARD:
+        lock = _CONN_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _CONN_LOCKS[key] = lock
+        return lock
 
 
 def _is_transient_db_error(message: str) -> bool:
@@ -44,6 +59,23 @@ def _is_read_only_query(sql: str) -> bool:
             "EXPLAIN",
         )
     )
+
+class _CursorContext:
+    def __init__(self, conn):
+        self.conn = conn
+        self.cur = None
+
+    def __enter__(self):
+        self.cur = self.conn.cursor()
+        return self.cur
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.cur:
+            try:
+                self.cur.close()
+            except Exception:
+                pass
+
 
 class DbWorker(QThread):
     """
@@ -101,9 +133,11 @@ class DbWorker(QThread):
             conn = None
 
             try:
-                conn = self.session_manager.connect(self.cfg)
+                conn = self.session_manager.acquire(self.cfg)
 
-                with conn.cursor() as cur:
+                query_lock = _get_conn_lock(conn)
+
+                with query_lock, _CursorContext(conn) as cur:
                     # Apply schema/database context where appropriate.
                     if self.db_name and backend.name == "mysql":
                         try:
@@ -225,6 +259,7 @@ class DbWorker(QThread):
                             safe_table = str(self.table_name).replace("`", "``")
                             cur.execute(f"SHOW TABLE STATUS FROM `{safe_db}` LIKE %s", (self.table_name,))
                             status = cur.fetchone() or {}
+                            s_ci = {str(k).lower(): v for k, v in status.items()} if isinstance(status, dict) else {}
 
                             ddl = ""
                             try:
@@ -234,21 +269,27 @@ class DbWorker(QThread):
                             except Exception as ddl_err:
                                 ddl = f"-- Could not retrieve DDL: {ddl_err}"
 
+                            is_view = str(s_ci.get("comment", "")).upper() == "VIEW"
+                            engine = "VIEW" if is_view else (s_ci.get("engine") or "InnoDB")
+                            row_fmt = s_ci.get("row_format") or ("View" if is_view else "Dynamic")
+                            raw_rows = s_ci.get("rows")
+                            rows = int(raw_rows) if raw_rows is not None else 0
+
                             t_info = {
                                 "type": "table",
                                 "backend": "MySQL / MariaDB",
                                 "schema_name": self.db_name,
                                 "table_name": self.table_name,
-                                "engine": status.get("Engine", "InnoDB") or "InnoDB",
-                                "row_format": status.get("Row_format", "Dynamic") or "Dynamic",
-                                "rows": status.get("Rows", 0) or 0,
-                                "data_length": status.get("Data_length", 0) or 0,
-                                "index_length": status.get("Index_length", 0) or 0,
-                                "auto_increment": status.get("Auto_increment"),
-                                "collation": status.get("Collation", "") or "",
-                                "create_time": str(status.get("Create_time") or ""),
-                                "update_time": str(status.get("Update_time") or ""),
-                                "comment": status.get("Comment", "") or "",
+                                "engine": engine,
+                                "row_format": row_fmt,
+                                "rows": rows,
+                                "data_length": s_ci.get("data_length") or 0,
+                                "index_length": s_ci.get("index_length") or 0,
+                                "auto_increment": s_ci.get("auto_increment"),
+                                "collation": s_ci.get("collation") or "",
+                                "create_time": str(s_ci.get("create_time") or ""),
+                                "update_time": str(s_ci.get("update_time") or ""),
+                                "comment": s_ci.get("comment") or "",
                                 "ddl": ddl,
                             }
                         elif backend.name == "sqlite":
@@ -326,11 +367,9 @@ class DbWorker(QThread):
                 return
 
             finally:
-                try:
-                    if conn:
-                        conn.close()
-                except Exception:
-                    pass
+                if conn is not None:
+                    is_broken = bool(last_error and _is_transient_db_error(last_error))
+                    self.session_manager.release(self.cfg, conn, has_error=is_broken)
 
         if last_error is not None:
             self.error_occurred.emit(str(last_error))

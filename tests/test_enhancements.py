@@ -391,6 +391,7 @@ def test_admin_console_refresh_all(qapp, services):
     # Verify refresh_all executes without exceptions
     console.refresh_all()
     assert len(commands_run) > 0
+    console.stop_all_workers()
 
 
 def test_notification_hub_push_signatures():
@@ -475,6 +476,7 @@ def test_admin_console_sudo_localhost_resolution(qapp, services):
         assert pw == "pass123"
     finally:
         c_mod._ConsoleLocalExecThread = orig_thread
+        console.stop_all_workers()
 
 
 def test_console_local_exec_thread_no_hang(qapp):

@@ -192,6 +192,11 @@ class FileBrowserPanel(QWidget):
             "host": host, "port": port, "user": user, "creds": creds,
             "use_agent": use_agent, "strict_host_keys": strict_host_keys,
         }
+        user_str = str(user or "").strip()
+        user_home = "/root" if user_str == "root" else (f"/home/{user_str}" if user_str else "/")
+        self.home_dir = user_home
+        self.current_path = user_home
+        self.path_input.setText(user_home)
 
     # ------------------------------------------------------------------
     # Navigation
@@ -212,7 +217,9 @@ class FileBrowserPanel(QWidget):
         if self.mode == "local":
             self.navigate_to_path(os.path.expanduser("~"))
         else:
-            self.navigate_to_path("/")
+            user = str(self.host_info.get("user") or "").strip()
+            home = getattr(self, "home_dir", None) or ("/root" if user == "root" else (f"/home/{user}" if user else "/"))
+            self.navigate_to_path(home)
 
     def navigate_to_path(self, path: str) -> None:
         self.current_path = path
