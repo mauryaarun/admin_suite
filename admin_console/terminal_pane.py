@@ -52,6 +52,8 @@ class TerminalOutputPane(QWidget):
         self._is_maximized: bool = False
         self._font_size: int = 10
         self._start_time: float = 0.0
+        self.cmd_input = None
+        self.output_text = None
 
         self.setMinimumHeight(36)
 
@@ -151,7 +153,6 @@ class TerminalOutputPane(QWidget):
         self.output_text.setStyleSheet(
             "background-color: #0e1117; color: #dcdfe4; selection-background-color: #264f78; border: 1px solid #282c34;"
         )
-        self.output_text.viewport().installEventFilter(self)
         layout.addWidget(self.output_text, 1)
 
         # 3. Interactive Ad-hoc Command Bar
@@ -183,6 +184,9 @@ class TerminalOutputPane(QWidget):
         cmd_layout.addWidget(self.btn_run)
 
         layout.addWidget(self.cmd_bar)
+
+        # Install viewport event filter for Ctrl + mouse wheel zoom
+        self.output_text.viewport().installEventFilter(self)
 
         self._print_welcome()
 
@@ -366,7 +370,8 @@ class TerminalOutputPane(QWidget):
 
     def eventFilter(self, obj, event):
         # Handle Up/Down arrow for command history
-        if obj == self.cmd_input and event.type() == event.Type.KeyPress:
+        cmd_input = getattr(self, "cmd_input", None)
+        if cmd_input is not None and obj == cmd_input and event.type() == event.Type.KeyPress:
             key = event.key()
             if key == Qt.Key.Key_Up:
                 if self._history and self._history_idx > 0:
@@ -381,7 +386,7 @@ class TerminalOutputPane(QWidget):
                     self._history_idx = len(self._history)
                     self.cmd_input.clear()
                 return True
-        elif hasattr(self, "output_text") and obj == self.output_text.viewport() and event.type() == event.Type.Wheel:
+        elif getattr(self, "output_text", None) is not None and obj == self.output_text.viewport() and event.type() == event.Type.Wheel:
             if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
                 delta = event.angleDelta().y()
                 if delta > 0:

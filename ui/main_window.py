@@ -517,7 +517,7 @@ class MainWindow(QMainWindow):
         navbar_layout.setSpacing(6)
 
         self.sidebar_toggle_btn = QPushButton("◀")
-        self.sidebar_toggle_btn.setToolTip("Toggle Left Sidebar (Ctrl+B)")
+        self.sidebar_toggle_btn.setToolTip("Left Sidebar (Ctrl+B)")
         self.sidebar_toggle_btn.clicked.connect(lambda: self.toggle_sidebar())
 
         palette_btn = QPushButton("⌘ (Ctrl+K)")
@@ -529,14 +529,14 @@ class MainWindow(QMainWindow):
         )
         self.broadcast_btn.clicked.connect(self.toggle_broadcast)
 
-        self.admin_console_btn = QPushButton("🖥️ Admin Console")
+        self.admin_console_btn = QPushButton("🖥️")
         self.admin_console_btn.setStyleSheet(
             f"background:{theme.get('accent', '#3daee9')};color:white;padding:6px 12px;font-weight:bold;"
         )
-        self.admin_console_btn.setToolTip("Open Unified Admin Console (SysAdmin, Security, Network, Web, VAPT)")
+        self.admin_console_btn.setToolTip("Admin Console")
         self.admin_console_btn.clicked.connect(self.open_admin_console_selected)
 
-        self.vpn_btn = QPushButton("⚡ Connect VPN")
+        self.vpn_btn = QPushButton("⚡VPN")
         self.vpn_btn.setStyleSheet(
             f"background:{theme['warn']};color:white;padding:6px 12px;font-weight:bold;"
         )
@@ -549,7 +549,7 @@ class MainWindow(QMainWindow):
 
         # Single right sidebar toggle button
         self.right_sidebar_toggle_btn = QPushButton("▶")
-        self.right_sidebar_toggle_btn.setToolTip("Toggle Right Sidebar (Copilot & Event Logs) (Ctrl+Shift+A)")
+        self.right_sidebar_toggle_btn.setToolTip("Right Sidebar(Ctrl+Shift+A)")
         self.right_sidebar_toggle_btn.clicked.connect(lambda: self.toggle_right_sidebar())
 
         # Compatibility references
@@ -569,9 +569,11 @@ class MainWindow(QMainWindow):
         navbar_layout.addWidget(self.broadcast_btn)
         navbar_layout.addWidget(self.vpn_btn)
         navbar_layout.addWidget(self.vpn_cfg_btn)
-        navbar_layout.addWidget(self.right_sidebar_toggle_btn)
+
         navbar_layout.addStretch()
         navbar_layout.addWidget(self.vpn_status)
+
+
 
         self.bell_btn = QPushButton("🔔 0")
         self.bell_btn.clicked.connect(
@@ -583,6 +585,8 @@ class MainWindow(QMainWindow):
 
         navbar_layout.addWidget(self.bell_btn)
         navbar_layout.addWidget(self.clock)
+
+        navbar_layout.addWidget(self.right_sidebar_toggle_btn)
 
         workspace_layout.addWidget(navbar)
 
@@ -613,7 +617,7 @@ class MainWindow(QMainWindow):
 
         # Welcome screen (Starting tab)
         self.welcome_widget = WelcomeWidget(self.services, self)
-        self.tabs.addTab(self.welcome_widget, "🏠 Welcome")
+        self.tabs.addTab(self.welcome_widget, "🏠")
 
         # Database manager (created on-demand, parented to tabs and hidden until opened)
         self.db_manager_widget = DatabaseManagerWidget(self.services, self.tabs)
