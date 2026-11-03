@@ -191,9 +191,19 @@ class Fail2banManagerWidget(QWidget):
         if lbl:
             lbl.setText(val)
 
-    def refresh(self):
+    def refresh(self, on_complete: Optional[Callable[[], None]] = None):
         """Fetch fail2ban global status and jail list."""
-        self.run_cmd(SecurityCommands.fail2ban_status(), self._on_status_result)
+        def _on_done(stdout: str, stderr: str, code: int):
+            try:
+                self._on_status_result(stdout, stderr, code)
+            finally:
+                if on_complete:
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
+
+        self.run_cmd(SecurityCommands.fail2ban_status(), _on_done)
 
     def _on_status_result(self, stdout: str, stderr: str, code: int):
         if "not found" in stderr.lower() or "command not found" in stdout.lower() or code != 0 and not stdout:

@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -36,6 +37,8 @@ class TerminalOutputPane(QWidget):
 
     execute_requested = pyqtSignal(str, bool)  # command, use_sudo
     visibility_toggle_requested = pyqtSignal()
+    resize_height_requested = pyqtSignal(int)  # target height in px (positive) or % (negative)
+    toggle_maximize_requested = pyqtSignal()
 
     def __init__(self, services, host_name: str = "Localhost", parent=None):
         super().__init__(parent)
@@ -46,7 +49,11 @@ class TerminalOutputPane(QWidget):
         self._history: list[str] = []
         self._history_idx: int = -1
         self._is_collapsed: bool = False
+        self._is_maximized: bool = False
+        self._font_size: int = 10
         self._start_time: float = 0.0
+
+        self.setMinimumHeight(36)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -59,7 +66,7 @@ class TerminalOutputPane(QWidget):
         )
         h_layout = QHBoxLayout(header)
         h_layout.setContentsMargins(6, 2, 6, 2)
-        h_layout.setSpacing(8)
+        h_layout.setSpacing(6)
 
         self.title_lbl = QLabel(f"📟 Terminal Output — {self.host_name}")
         self.title_lbl.setStyleSheet(f"font-weight: bold; color: {self.theme.get('accent', '#3daee9')}; font-size: 12px;")
@@ -75,7 +82,7 @@ class TerminalOutputPane(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Filter output...")
-        self.search_input.setFixedWidth(130)
+        self.search_input.setFixedWidth(120)
         self.search_input.setStyleSheet("font-size: 11px; padding: 1px 4px;")
         self.search_input.textChanged.connect(self._filter_output)
         h_layout.addWidget(self.search_input)
@@ -84,6 +91,21 @@ class TerminalOutputPane(QWidget):
         self.autoscroll_chk.setChecked(True)
         self.autoscroll_chk.setStyleSheet("font-size: 11px;")
         h_layout.addWidget(self.autoscroll_chk)
+
+        # Font zoom buttons
+        self.btn_font_dec = QPushButton("A-")
+        self.btn_font_dec.setToolTip("Decrease Font Size (Ctrl + Wheel Down)")
+        self.btn_font_dec.setStyleSheet("font-size: 10px; padding: 1px 4px; font-weight: bold;")
+        self.btn_font_dec.setFixedWidth(24)
+        self.btn_font_dec.clicked.connect(self.zoom_out)
+        h_layout.addWidget(self.btn_font_dec)
+
+        self.btn_font_inc = QPushButton("A+")
+        self.btn_font_inc.setToolTip("Increase Font Size (Ctrl + Wheel Up)")
+        self.btn_font_inc.setStyleSheet("font-size: 10px; padding: 1px 4px; font-weight: bold;")
+        self.btn_font_inc.setFixedWidth(24)
+        self.btn_font_inc.clicked.connect(self.zoom_in)
+        h_layout.addWidget(self.btn_font_inc)
 
         self.btn_copy = QPushButton("📋 Copy")
         self.btn_copy.setToolTip("Copy all terminal output to clipboard")
@@ -97,6 +119,22 @@ class TerminalOutputPane(QWidget):
         self.btn_clear.clicked.connect(self.clear_output)
         h_layout.addWidget(self.btn_clear)
 
+        # Quick size presets dropdown button
+        self.btn_size = QPushButton("↕ Size")
+        self.btn_size.setToolTip("Quick Resize Terminal Output Height (Compact, Standard, Expanded, 50%, Maximize)")
+        self.btn_size.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.btn_size.clicked.connect(self._show_size_menu)
+        h_layout.addWidget(self.btn_size)
+
+        # Maximize / restore button
+        self.btn_maximize = QPushButton("⛶")
+        self.btn_maximize.setToolTip("Maximize / Restore Terminal Output (85% height)")
+        self.btn_maximize.setFixedWidth(24)
+        self.btn_maximize.setStyleSheet("font-size: 11px; font-weight: bold;")
+        self.btn_maximize.clicked.connect(self._toggle_maximize)
+        h_layout.addWidget(self.btn_maximize)
+
+        # Collapse / expand button
         self.btn_toggle = QPushButton("▼")
         self.btn_toggle.setToolTip("Collapse/Expand terminal pane")
         self.btn_toggle.setFixedWidth(24)
@@ -113,6 +151,7 @@ class TerminalOutputPane(QWidget):
         self.output_text.setStyleSheet(
             "background-color: #0e1117; color: #dcdfe4; selection-background-color: #264f78; border: 1px solid #282c34;"
         )
+        self.output_text.viewport().installEventFilter(self)
         layout.addWidget(self.output_text, 1)
 
         # 3. Interactive Ad-hoc Command Bar
@@ -253,11 +292,76 @@ class TerminalOutputPane(QWidget):
         # Find and move
         self.output_text.find(text)
 
+    def zoom_in(self):
+        """Increase terminal output font size."""
+        self._font_size = min(24, self._font_size + 1)
+        font = self.output_text.font()
+        font.setPointSize(self._font_size)
+        self.output_text.setFont(font)
+
+    def zoom_out(self):
+        """Decrease terminal output font size."""
+        self._font_size = max(7, self._font_size - 1)
+        font = self.output_text.font()
+        font.setPointSize(self._font_size)
+        self.output_text.setFont(font)
+
+    def zoom_reset(self):
+        """Reset terminal output font size to default (10pt)."""
+        self._font_size = 10
+        font = self.output_text.font()
+        font.setPointSize(10)
+        self.output_text.setFont(font)
+
+    def _show_size_menu(self):
+        """Display quick size presets dropdown menu."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"background: {self.theme.get('panel', '#252526')}; color: {self.theme.get('fg', '#ffffff')};"
+        )
+        act_compact = menu.addAction("📱 Compact (140 px)")
+        act_compact.triggered.connect(lambda: self.resize_height_requested.emit(140))
+
+        act_std = menu.addAction("💻 Standard (240 px)")
+        act_std.triggered.connect(lambda: self.resize_height_requested.emit(240))
+
+        act_exp = menu.addAction("🖥️ Expanded (400 px)")
+        act_exp.triggered.connect(lambda: self.resize_height_requested.emit(400))
+
+        menu.addSeparator()
+
+        act_half = menu.addAction("⚖️ Half Screen (50%)")
+        act_half.triggered.connect(lambda: self.resize_height_requested.emit(-50))
+
+        act_max = menu.addAction("⛶ Maximize (85%)")
+        act_max.triggered.connect(lambda: self.resize_height_requested.emit(-85))
+
+        menu.exec(self.btn_size.mapToGlobal(self.btn_size.rect().bottomLeft()))
+
+    def _toggle_maximize(self):
+        self.toggle_maximize_requested.emit()
+
+    def set_maximized(self, is_max: bool):
+        self._is_maximized = is_max
+        if hasattr(self, "btn_maximize"):
+            self.btn_maximize.setText("🗗" if is_max else "⛶")
+            self.btn_maximize.setToolTip(
+                "Restore Terminal Height" if is_max else "Maximize Terminal Output (85% height)"
+            )
+
+    def set_collapsed(self, collapsed: bool):
+        self._is_collapsed = collapsed
+        self.output_text.setVisible(not collapsed)
+        self.cmd_bar.setVisible(not collapsed)
+        self.btn_toggle.setText("▲" if collapsed else "▼")
+        self.btn_toggle.setToolTip("Expand terminal pane" if collapsed else "Collapse terminal pane")
+
     def _toggle_collapse(self):
         self._is_collapsed = not self._is_collapsed
         self.output_text.setVisible(not self._is_collapsed)
         self.cmd_bar.setVisible(not self._is_collapsed)
         self.btn_toggle.setText("▲" if self._is_collapsed else "▼")
+        self.btn_toggle.setToolTip("Expand terminal pane" if self._is_collapsed else "Collapse terminal pane")
         self.visibility_toggle_requested.emit()
 
     def eventFilter(self, obj, event):
@@ -276,5 +380,13 @@ class TerminalOutputPane(QWidget):
                 elif self._history_idx >= len(self._history) - 1:
                     self._history_idx = len(self._history)
                     self.cmd_input.clear()
+                return True
+        elif hasattr(self, "output_text") and obj == self.output_text.viewport() and event.type() == event.Type.Wheel:
+            if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+                delta = event.angleDelta().y()
+                if delta > 0:
+                    self.zoom_in()
+                elif delta < 0:
+                    self.zoom_out()
                 return True
         return super().eventFilter(obj, event)

@@ -203,10 +203,25 @@ class PortExposureWidget(QWidget):
         if lbl:
             lbl.setText(val)
 
-    def refresh(self):
-        """Fetch listening sockets and active connections."""
-        self.run_cmd(SecurityCommands.list_listening_sockets(), self._on_sockets_result)
-        self.run_cmd(SecurityCommands.list_active_connections(), self._on_active_conn_result)
+    def refresh(self, on_complete: Optional[Callable[[], None]] = None):
+        """Fetch listening sockets and active connections sequentially."""
+        def _on_conns_done(stdout: str, stderr: str, code: int):
+            try:
+                self._on_active_conn_result(stdout, stderr, code)
+            finally:
+                if on_complete:
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
+
+        def _on_sockets_done(stdout: str, stderr: str, code: int):
+            try:
+                self._on_sockets_result(stdout, stderr, code)
+            finally:
+                self.run_cmd(SecurityCommands.list_active_connections(), _on_conns_done)
+
+        self.run_cmd(SecurityCommands.list_listening_sockets(), _on_sockets_done)
 
     def _on_sockets_result(self, stdout: str, stderr: str, code: int):
         self._all_sockets = SecurityParsers.parse_listening_sockets(stdout)

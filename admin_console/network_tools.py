@@ -97,26 +97,33 @@ class NetworkAdminWidget(QWidget):
 
         return widget
 
-    def refresh_interfaces(self):
+    def refresh_interfaces(self, on_complete: Optional[Callable[[], None]] = None):
         cmd = "ip -br addr show && echo '--- DETAIL ---' && ip -s link show"
         def on_done(out, err, rc):
-            self.iface_raw.setPlainText(out or err)
-            # Parse ip -br addr show
-            lines = out.split("--- DETAIL ---")[0].strip().splitlines()
-            self.iface_table.setRowCount(0)
-            for line in lines:
-                parts = line.split()
-                if len(parts) >= 2:
-                    iface = parts[0]
-                    state = parts[1]
-                    ips = ", ".join(parts[2:]) if len(parts) > 2 else "None"
-                    row = self.iface_table.rowCount()
-                    self.iface_table.insertRow(row)
-                    self.iface_table.setItem(row, 0, QTableWidgetItem(iface))
-                    self.iface_table.setItem(row, 1, QTableWidgetItem(state))
-                    self.iface_table.setItem(row, 2, QTableWidgetItem(ips))
-                    self.iface_table.setItem(row, 3, QTableWidgetItem("-"))
-                    self.iface_table.setItem(row, 4, QTableWidgetItem("-"))
+            try:
+                self.iface_raw.setPlainText(out or err)
+                # Parse ip -br addr show
+                lines = out.split("--- DETAIL ---")[0].strip().splitlines()
+                self.iface_table.setRowCount(0)
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        iface = parts[0]
+                        state = parts[1]
+                        ips = ", ".join(parts[2:]) if len(parts) > 2 else "None"
+                        row = self.iface_table.rowCount()
+                        self.iface_table.insertRow(row)
+                        self.iface_table.setItem(row, 0, QTableWidgetItem(iface))
+                        self.iface_table.setItem(row, 1, QTableWidgetItem(state))
+                        self.iface_table.setItem(row, 2, QTableWidgetItem(ips))
+                        self.iface_table.setItem(row, 3, QTableWidgetItem("-"))
+                        self.iface_table.setItem(row, 4, QTableWidgetItem("-"))
+            finally:
+                if on_complete:
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
         self.run_cmd(cmd, on_done)
 
     # ------------------------------------------------------------

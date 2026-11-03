@@ -325,8 +325,18 @@ class FirewallManagerWidget(QWidget):
         self.active_backend = self.backend_combo.currentData()
         self.refresh()
 
-    def refresh(self):
+    def _fire_refresh_callback(self):
+        cb = getattr(self, "_refresh_callback", None)
+        self._refresh_callback = None
+        if cb:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def refresh(self, on_complete: Optional[Callable[[], None]] = None):
         """Detect and fetch firewall status and rules."""
+        self._refresh_callback = on_complete
         if self.active_backend == "auto":
             # Detect whether firewalld or ufw or iptables is present
             self.run_cmd(SecurityCommands.detect_firewall(), self._on_detection_result)
@@ -356,85 +366,94 @@ class FirewallManagerWidget(QWidget):
             self.run_cmd(SecurityCommands.get_ufw_status(), self._on_ufw_result)
 
     def _on_ufw_result(self, stdout: str, stderr: str, code: int):
-        data = SecurityParsers.parse_ufw_status(stdout)
-        is_active = data["active"]
+        try:
+            data = SecurityParsers.parse_ufw_status(stdout)
+            is_active = data["active"]
 
-        if is_active:
-            self.status_badge.setText("● Firewall: ACTIVE (UFW)")
-            self.status_badge.setStyleSheet(
-                "background: #1b4d24; color: #44eb74; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #2e7d32;"
-            )
-            self.btn_toggle_fw.setText("⛔ Disable Firewall")
-        else:
-            self.status_badge.setText("○ Firewall: INACTIVE (UFW)")
-            self.status_badge.setStyleSheet(
-                "background: #4d1b1b; color: #eb4444; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #b71c1c;"
-            )
-            self.btn_toggle_fw.setText("⚡ Enable Firewall")
+            if is_active:
+                self.status_badge.setText("● Firewall: ACTIVE (UFW)")
+                self.status_badge.setStyleSheet(
+                    "background: #1b4d24; color: #44eb74; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #2e7d32;"
+                )
+                self.btn_toggle_fw.setText("⛔ Disable Firewall")
+            else:
+                self.status_badge.setText("○ Firewall: INACTIVE (UFW)")
+                self.status_badge.setStyleSheet(
+                    "background: #4d1b1b; color: #eb4444; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #b71c1c;"
+                )
+                self.btn_toggle_fw.setText("⚡ Enable Firewall")
 
-        in_pol = data.get("default_incoming", "unknown")
-        out_pol = data.get("default_outgoing", "unknown")
-        self.policy_label.setText(f"Default Policies: Incoming: {in_pol} | Outgoing: {out_pol}")
+            in_pol = data.get("default_incoming", "unknown")
+            out_pol = data.get("default_outgoing", "unknown")
+            self.policy_label.setText(f"Default Policies: Incoming: {in_pol} | Outgoing: {out_pol}")
 
-        self._rules_data = data["rules"]
-        self._populate_table(self._rules_data)
+            self._rules_data = data["rules"]
+            self._populate_table(self._rules_data)
+        finally:
+            self._fire_refresh_callback()
 
     def _on_firewalld_result(self, stdout: str, stderr: str, code: int):
-        data = SecurityParsers.parse_firewalld_status(stdout)
-        is_active = data["active"]
-        self.current_zone = data.get("zone", "public")
+        try:
+            data = SecurityParsers.parse_firewalld_status(stdout)
+            is_active = data["active"]
+            self.current_zone = data.get("zone", "public")
 
-        if is_active:
-            self.status_badge.setText(f"● Firewall: ACTIVE (Firewalld - {self.current_zone})")
-            self.status_badge.setStyleSheet(
-                "background: #1b4d24; color: #44eb74; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #2e7d32;"
-            )
-            self.btn_toggle_fw.setText("⛔ Disable Firewall")
-        else:
-            self.status_badge.setText("○ Firewall: INACTIVE (Firewalld)")
-            self.status_badge.setStyleSheet(
-                "background: #4d1b1b; color: #eb4444; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #b71c1c;"
-            )
-            self.btn_toggle_fw.setText("⚡ Enable Firewall")
+            if is_active:
+                self.status_badge.setText(f"● Firewall: ACTIVE (Firewalld - {self.current_zone})")
+                self.status_badge.setStyleSheet(
+                    "background: #1b4d24; color: #44eb74; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #2e7d32;"
+                )
+                self.btn_toggle_fw.setText("⛔ Disable Firewall")
+            else:
+                self.status_badge.setText("○ Firewall: INACTIVE (Firewalld)")
+                self.status_badge.setStyleSheet(
+                    "background: #4d1b1b; color: #eb4444; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #b71c1c;"
+                )
+                self.btn_toggle_fw.setText("⚡ Enable Firewall")
 
-        active_zones_str = ", ".join(data.get("active_zones", [self.current_zone]))
-        self.policy_label.setText(f"Active Zones: {active_zones_str} | Services: {len(data['services'])} | Ports: {len(data['ports'])}")
+            active_zones_str = ", ".join(data.get("active_zones", [self.current_zone]))
+            self.policy_label.setText(f"Active Zones: {active_zones_str} | Services: {len(data['services'])} | Ports: {len(data['ports'])}")
 
-        self._rules_data = data["rules"]
-        self._populate_table(self._rules_data)
+            self._rules_data = data["rules"]
+            self._populate_table(self._rules_data)
+        finally:
+            self._fire_refresh_callback()
 
     def _on_iptables_result(self, stdout: str, stderr: str, code: int):
-        self.status_badge.setText("● Firewall: iptables")
-        self.status_badge.setStyleSheet(
-            "background: #333; color: #4fc3f7; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #555;"
-        )
-        self.policy_label.setText("Legacy packet filter rules")
+        try:
+            self.status_badge.setText("● Firewall: iptables")
+            self.status_badge.setStyleSheet(
+                "background: #333; color: #4fc3f7; font-weight: bold; padding: 4px 10px; border-radius: 4px; border: 1px solid #555;"
+            )
+            self.policy_label.setText("Legacy packet filter rules")
 
-        # Parse basic iptables lines
-        rules = []
-        rule_num = 1
-        for line in stdout.splitlines():
-            line_s = line.strip()
-            if not line_s or line_s.startswith("Chain") or line_s.startswith("pkts") or line_s.startswith("num"):
-                continue
-            parts = line_s.split()
-            if len(parts) >= 6:
-                act = parts[2] if len(parts) > 2 else "ACCEPT"
-                proto = parts[1] if len(parts) > 1 else "all"
-                src = parts[7] if len(parts) > 7 else "anywhere"
-                rules.append({
-                    "num": rule_num,
-                    "action": act,
-                    "to": proto,
-                    "from": src,
-                    "ipv6": False,
-                    "comment": line_s,
-                    "raw_target": line_s,
-                })
-                rule_num += 1
+            # Parse basic iptables lines
+            rules = []
+            rule_num = 1
+            for line in stdout.splitlines():
+                line_s = line.strip()
+                if not line_s or line_s.startswith("Chain") or line_s.startswith("pkts") or line_s.startswith("num"):
+                    continue
+                parts = line_s.split()
+                if len(parts) >= 6:
+                    act = parts[2] if len(parts) > 2 else "ACCEPT"
+                    proto = parts[1] if len(parts) > 1 else "all"
+                    src = parts[7] if len(parts) > 7 else "anywhere"
+                    rules.append({
+                        "num": rule_num,
+                        "action": act,
+                        "to": proto,
+                        "from": src,
+                        "ipv6": False,
+                        "comment": line_s,
+                        "raw_target": line_s,
+                    })
+                    rule_num += 1
 
-        self._rules_data = rules
-        self._populate_table(rules)
+            self._rules_data = rules
+            self._populate_table(rules)
+        finally:
+            self._fire_refresh_callback()
 
     def _populate_table(self, rules: list[dict[str, Any]]):
         self.table.setRowCount(len(rules))

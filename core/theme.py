@@ -254,11 +254,14 @@ QToolButton:hover {
 QSplitter::handle {
     background:$BORDER;
 }
+QSplitter::handle:hover {
+    background:$ACCENT;
+}
 QSplitter::handle:horizontal {
-    width:2px;
+    width:5px;
 }
 QSplitter::handle:vertical {
-    height:2px;
+    height:6px;
 }
 QMenuBar {
     background:$PANEL;

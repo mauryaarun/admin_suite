@@ -325,6 +325,381 @@ class SecurityCommands:
             "echo '=== AUDIT_END ==='"
         )
 
+    # ---------------- Distribution & Environment Detection ----------------
+    @staticmethod
+    def detect_os() -> str:
+        return (
+            "echo '=== OS_RELEASE ==='; "
+            "if [ -f /etc/os-release ]; then "
+            "  cat /etc/os-release; "
+            "elif [ -f /etc/redhat-release ]; then "
+            "  echo 'ID=rhel'; echo 'NAME=\"Red Hat Enterprise Linux\"'; "
+            "elif [ -f /etc/debian_version ]; then "
+            "  echo 'ID=debian'; echo 'NAME=\"Debian GNU/Linux\"'; "
+            "else "
+            "  echo 'ID=generic'; echo 'NAME=\"Linux\"'; "
+            "fi; "
+            "echo '=== PKG_MANAGER ==='; "
+            "for pm in dnf yum apt-get pacman zypper; do "
+            "  if which $pm >/dev/null 2>&1; then echo \"PKG_MGR:$pm\"; break; fi; "
+            "done; "
+            "echo '=== ARCH ==='; "
+            "uname -m"
+        )
+
+    @staticmethod
+    def install_packages_cmd(packages: List[str], pkg_manager: str = "auto") -> str:
+        pkgs_clean = " ".join(shlex.quote(p) for p in packages if p)
+        if pkg_manager in ("dnf", "yum"):
+            return f"{pkg_manager} install -y {pkgs_clean}"
+        elif pkg_manager in ("apt", "apt-get", "debian"):
+            return f"DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs_clean}"
+        elif pkg_manager == "zypper":
+            return f"zypper install -y {pkgs_clean}"
+        elif pkg_manager == "pacman":
+            return f"pacman -S --noconfirm {pkgs_clean}"
+        else:
+            return (
+                f"if which dnf >/dev/null 2>&1; then dnf install -y {pkgs_clean}; "
+                f"elif which apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs_clean}; "
+                f"elif which yum >/dev/null 2>&1; then yum install -y {pkgs_clean}; "
+                f"elif which zypper >/dev/null 2>&1; then zypper install -y {pkgs_clean}; "
+                f"elif which pacman >/dev/null 2>&1; then pacman -S --noconfirm {pkgs_clean}; "
+                f"else echo 'Unknown package manager'; exit 1; fi"
+            )
+
+    # ---------------- AIDE (File Integrity Monitoring) ----------------
+    @staticmethod
+    def aide_probe() -> str:
+        return (
+            "echo '=== AIDE_PROBE ==='; "
+            "which aide >/dev/null 2>&1 && echo 'INSTALLED:yes' || echo 'INSTALLED:no'; "
+            "which aideinit >/dev/null 2>&1 && echo 'AIDEINIT:yes' || echo 'AIDEINIT:no'; "
+            "if [ -f /etc/aide.conf ]; then echo 'CONFIG:/etc/aide.conf'; "
+            "elif [ -f /etc/aide/aide.conf ]; then echo 'CONFIG:/etc/aide/aide.conf'; "
+            "else echo 'CONFIG:none'; fi; "
+            "db_found='no'; "
+            "for db in /var/lib/aide/aide.db.gz /var/lib/aide/aide.db; do "
+            "  if [ -f \"$db\" ]; then "
+            "    echo 'DB_EXISTS:yes'; "
+            "    echo \"DB_PATH:$db\"; "
+            "    ls -lh \"$db\" 2>/dev/null | awk '{print \"DB_STAT:\"$5\"|\"$6\" \"$7\" \"$8}'; "
+            "    db_found='yes'; break; "
+            "  fi; "
+            "done; "
+            "if [ \"$db_found\" = 'no' ]; then echo 'DB_EXISTS:no'; fi; "
+            "if [ -f /var/lib/aide/aide.db.new.gz ] || [ -f /var/lib/aide/aide.db.new ]; then "
+            "  echo 'DB_NEW_EXISTS:yes'; "
+            "else "
+            "  echo 'DB_NEW_EXISTS:no'; "
+            "fi; "
+            "if [ -f /etc/cron.daily/aide-check ] || [ -f /etc/cron.daily/aide ] || (crontab -l 2>/dev/null | grep -q 'aide'); then "
+            "  echo 'CRON_SCHEDULED:yes'; "
+            "  if [ -f /etc/cron.daily/aide-check ]; then echo 'CRON_FILE:/etc/cron.daily/aide-check'; "
+            "  elif [ -f /etc/cron.daily/aide ]; then echo 'CRON_FILE:/etc/cron.daily/aide'; "
+            "  else echo 'CRON_FILE:crontab'; fi; "
+            "else "
+            "  echo 'CRON_SCHEDULED:no'; "
+            "fi; "
+            "if [ -f /var/log/aide/aide.log ]; then "
+            "  echo 'LOG_EXISTS:yes'; "
+            "  ls -lh /var/log/aide/aide.log 2>/dev/null | awk '{print \"LOG_STAT:\"$5\"|\"$6\" \"$7\" \"$8}'; "
+            "else "
+            "  echo 'LOG_EXISTS:no'; "
+            "fi"
+        )
+
+    @staticmethod
+    def aide_init(family: str = "auto") -> str:
+        return (
+            "mkdir -p /var/lib/aide /var/log/aide; "
+            "if which aideinit >/dev/null 2>&1; then "
+            "  aideinit -y -f 2>&1; "
+            "elif which aide >/dev/null 2>&1; then "
+            "  aide --init 2>&1 && "
+            "  ( [ -f /var/lib/aide/aide.db.new.gz ] && cp -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz || "
+            "    [ -f /var/lib/aide/aide.db.new ] && cp -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db || true ) && "
+            "  echo 'AIDE baseline database initialized successfully.'; "
+            "else "
+            "  echo 'Error: aide binary not found'; exit 1; "
+            "fi"
+        )
+
+    @staticmethod
+    def aide_check() -> str:
+        return "aide --check 2>&1 || true"
+
+    @staticmethod
+    def aide_update() -> str:
+        return (
+            "aide --update 2>&1 && "
+            "( [ -f /var/lib/aide/aide.db.new.gz ] && cp -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz || "
+            "  [ -f /var/lib/aide/aide.db.new ] && cp -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db || true ) && "
+            "echo 'AIDE baseline database updated successfully.'"
+        )
+
+    @staticmethod
+    def aide_setup_cron() -> str:
+        script = (
+            "#!/bin/bash\\n"
+            "# Automated AIDE Integrity Check generated by Admin Suite\\n"
+            "mkdir -p /var/log/aide\\n"
+            "LOGFILE=/var/log/aide/aide.log\\n"
+            "echo \\\"=== AIDE Check Run: $(date) ===\\\" >> \\\"$LOGFILE\\\"\\n"
+            "/usr/sbin/aide --check >> \\\"$LOGFILE\\\" 2>&1\\n"
+        )
+        return (
+            f"mkdir -p /etc/cron.daily && "
+            f"printf '{script}' > /etc/cron.daily/aide-check && "
+            f"chmod 755 /etc/cron.daily/aide-check && echo 'Daily AIDE cron check installed at /etc/cron.daily/aide-check'"
+        )
+
+    @staticmethod
+    def aide_remove_cron() -> str:
+        return "rm -f /etc/cron.daily/aide-check && echo 'AIDE daily cron check removed.'"
+
+    @staticmethod
+    def aide_read_log(lines: int = 150) -> str:
+        return f"tail -n {int(lines)} /var/log/aide/aide.log 2>/dev/null || echo 'No AIDE log file found.'"
+
+    # ---------------- fapolicyd (Application Whitelisting) ----------------
+    @staticmethod
+    def fapolicyd_probe() -> str:
+        return (
+            "echo '=== FAPOLICYD_PROBE ==='; "
+            "which fapolicyd >/dev/null 2>&1 && echo 'INSTALLED:yes' || echo 'INSTALLED:no'; "
+            "which fapolicyd-cli >/dev/null 2>&1 && echo 'CLI_INSTALLED:yes' || echo 'CLI_INSTALLED:no'; "
+            "st=$(systemctl is-active fapolicyd 2>/dev/null || echo 'inactive'); echo \"SERVICE_STATE:$st\"; "
+            "en=$(systemctl is-enabled fapolicyd 2>/dev/null || echo 'disabled'); echo \"SERVICE_ENABLED:$en\"; "
+            "if [ -f /etc/fapolicyd/fapolicyd.conf ]; then "
+            "  echo 'CONFIG_EXISTS:yes'; "
+            "  grep -E '^(permissive|integrity)=' /etc/fapolicyd/fapolicyd.conf 2>/dev/null || true; "
+            "else "
+            "  echo 'CONFIG_EXISTS:no'; "
+            "fi; "
+            "if which fapolicyd-cli >/dev/null 2>&1; then "
+            "  echo '=== FAPOLICYD_STATUS ==='; "
+            "  fapolicyd-cli --status 2>/dev/null || true; "
+            "fi"
+        )
+
+    @staticmethod
+    def fapolicyd_enable() -> str:
+        return "systemctl unmask fapolicyd 2>/dev/null; systemctl enable --now fapolicyd"
+
+    @staticmethod
+    def fapolicyd_disable() -> str:
+        return "systemctl stop fapolicyd && systemctl disable fapolicyd"
+
+    @staticmethod
+    def fapolicyd_set_mode(permissive: bool = False) -> str:
+        mode_val = "1" if permissive else "0"
+        return (
+            f"if [ -f /etc/fapolicyd/fapolicyd.conf ]; then "
+            f"  sed -i -E 's/^[#\\s]*permissive\\s*=.*/permissive = {mode_val}/' /etc/fapolicyd/fapolicyd.conf; "
+            f"  systemctl restart fapolicyd 2>/dev/null || true; "
+            f"  echo 'fapolicyd mode set to permissive={mode_val} and service restarted.'; "
+            f"else "
+            f"  echo 'fapolicyd.conf not found'; exit 1; "
+            f"fi"
+        )
+
+    @staticmethod
+    def fapolicyd_update_db() -> str:
+        return "fapolicyd-cli --update"
+
+    @staticmethod
+    def fapolicyd_list_trust() -> str:
+        return "fapolicyd-cli --list 2>/dev/null | head -n 250"
+
+    @staticmethod
+    def fapolicyd_check_config() -> str:
+        return "fapolicyd-cli --check-config 2>&1"
+
+    @staticmethod
+    def fapolicyd_trust_file(path: str) -> str:
+        clean = shlex.quote(path.strip())
+        return (
+            f"mkdir -p /etc/fapolicyd && "
+            f"echo {clean} >> /etc/fapolicyd/trust.file && "
+            f"fapolicyd-cli --update && echo 'Path {path} added to fapolicyd trust database.'"
+        )
+
+    @staticmethod
+    def fapolicyd_get_denials(lines: int = 50) -> str:
+        return (
+            f"if which ausearch >/dev/null 2>&1; then "
+            f"  ausearch -m FANOTIFY -ts today 2>/dev/null | tail -n {int(lines)}; "
+            f"else "
+            f"  journalctl -u fapolicyd -n {int(lines)} --no-pager 2>/dev/null; "
+            f"fi"
+        )
+
+    # ---------------- OpenSCAP (Compliance Automation) ----------------
+    @staticmethod
+    def openscap_probe() -> str:
+        return (
+            "echo '=== OPENSCAP_PROBE ==='; "
+            "which oscap >/dev/null 2>&1 && echo 'INSTALLED:yes' || echo 'INSTALLED:no'; "
+            "echo '=== DATASTREAMS ==='; "
+            "for p in /usr/share/xml/scap/ssg/content/*-ds.xml /usr/share/scap-security-guide/*-ds.xml; do "
+            "  if [ -f \"$p\" ]; then echo \"DS:$p\"; fi; "
+            "done; "
+            "echo '=== HTML_DIR ==='; "
+            "if [ -d /var/www/html ]; then echo 'HTML_DIR:/var/www/html'; else echo 'HTML_DIR:/tmp'; fi"
+        )
+
+    @staticmethod
+    def openscap_list_profiles(datastream_path: str) -> str:
+        clean_ds = shlex.quote(datastream_path.strip())
+        return f"oscap info {clean_ds} 2>/dev/null"
+
+    @staticmethod
+    def openscap_eval(
+        profile: str,
+        datastream_path: str,
+        report_path: str = "/var/www/html/rhel-cis-report.html",
+        results_path: str = "",
+    ) -> str:
+        clean_profile = shlex.quote(profile.strip())
+        clean_ds = shlex.quote(datastream_path.strip())
+        clean_rep = shlex.quote(report_path.strip())
+        res_arg = f"--results {shlex.quote(results_path.strip())} " if results_path.strip() else ""
+        return (
+            f"mkdir -p $(dirname {clean_rep}) && "
+            f"oscap xccdf eval --profile {clean_profile} --report {clean_rep} {res_arg}{clean_ds} 2>&1; "
+            f"echo \"OSCAP_EXIT:$?\""
+        )
+
+    @staticmethod
+    def openscap_generate_fix(profile: str, datastream_path: str) -> str:
+        clean_profile = shlex.quote(profile.strip())
+        clean_ds = shlex.quote(datastream_path.strip())
+        return f"oscap xccdf generate fix --profile {clean_profile} {clean_ds} 2>&1"
+
+    # ---------------- Auditd (Auditing & Event Tracking) ----------------
+    AUDITD_USER_ACCOUNT_RULES = [
+        "-w /etc/passwd -p wa -k user_account_changes",
+        "-w /etc/shadow -p wa -k user_account_changes",
+        "-w /etc/group -p wa -k user_account_changes",
+        "-w /etc/gshadow -p wa -k user_account_changes",
+        "-w /etc/security/opasswd -p wa -k user_account_changes",
+        "-w /var/log/faillog -p wa -k logins",
+        "-w /var/log/lastlog -p wa -k logins",
+    ]
+
+    AUDITD_PERMISSION_MOD_RULES = [
+        "-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+    ]
+
+    AUDITD_SENSITIVE_FILE_RULES = [
+        "-w /etc/sudoers -p wa -k sudoers_changes",
+        "-w /etc/sudoers.d/ -p wa -k sudoers_changes",
+        "-w /etc/ssh/sshd_config -p wa -k sshd_config",
+        "-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config",
+        "-w /etc/pam.d/ -p wa -k pam_mod",
+        "-w /etc/crontab -p wa -k cron_changes",
+        "-w /etc/cron.d/ -p wa -k cron_changes",
+    ]
+
+    AUDITD_CIS_HARDENING_RULES = [
+        "-w /etc/passwd -p wa -k user_account_changes",
+        "-w /etc/shadow -p wa -k user_account_changes",
+        "-w /etc/group -p wa -k user_account_changes",
+        "-w /etc/gshadow -p wa -k user_account_changes",
+        "-w /etc/security/opasswd -p wa -k user_account_changes",
+        "-w /var/log/faillog -p wa -k logins",
+        "-w /var/log/lastlog -p wa -k logins",
+        "-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod",
+        "-w /etc/sudoers -p wa -k sudoers_changes",
+        "-w /etc/sudoers.d/ -p wa -k sudoers_changes",
+        "-w /etc/ssh/sshd_config -p wa -k sshd_config",
+        "-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config",
+        "-w /etc/pam.d/ -p wa -k pam_mod",
+        "-w /etc/crontab -p wa -k cron_changes",
+        "-w /etc/cron.d/ -p wa -k cron_changes",
+        "-a always,exit -F arch=b64 -S init_module,delete_module -k kernel_modules",
+        "-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time_change",
+        "-w /etc/localtime -p wa -k time_change",
+    ]
+
+    @staticmethod
+    def auditd_probe() -> str:
+        return (
+            "echo '=== AUDITD_PROBE ==='; "
+            "which auditctl >/dev/null 2>&1 && echo 'INSTALLED:yes' || echo 'INSTALLED:no'; "
+            "which ausearch >/dev/null 2>&1 && echo 'AUSEARCH_INSTALLED:yes' || echo 'AUSEARCH_INSTALLED:no'; "
+            "which aureport >/dev/null 2>&1 && echo 'AUREPORT_INSTALLED:yes' || echo 'AUREPORT_INSTALLED:no'; "
+            "st=$(systemctl is-active auditd 2>/dev/null || (service auditd status 2>/dev/null | grep -q running && echo 'active') || echo 'inactive'); "
+            "echo \"SERVICE_STATE:$st\"; "
+            "en=$(systemctl is-enabled auditd 2>/dev/null || echo 'disabled'); echo \"SERVICE_ENABLED:$en\"; "
+            "echo '=== AUDITCTL_STATUS ==='; "
+            "auditctl -s 2>/dev/null || true; "
+            "echo '=== RULE_COUNT ==='; "
+            "auditctl -l 2>/dev/null | grep -v 'No rules' | wc -l"
+        )
+
+    @staticmethod
+    def auditd_enable() -> str:
+        return "systemctl unmask auditd 2>/dev/null; systemctl enable --now auditd 2>/dev/null || service auditd start 2>/dev/null"
+
+    @staticmethod
+    def auditd_disable() -> str:
+        return "systemctl stop auditd && systemctl disable auditd 2>/dev/null || service auditd stop 2>/dev/null"
+
+    @staticmethod
+    def auditd_reload() -> str:
+        return (
+            "if which augenrules >/dev/null 2>&1; then "
+            "  augenrules --load; "
+            "elif [ -f /etc/audit/rules.d/99-admin-suite-security.rules ]; then "
+            "  auditctl -R /etc/audit/rules.d/99-admin-suite-security.rules; "
+            "elif [ -f /etc/audit/audit.rules ]; then "
+            "  auditctl -R /etc/audit/audit.rules; "
+            "else "
+            "  service auditd restart 2>/dev/null || systemctl restart auditd 2>/dev/null || true; "
+            "fi"
+        )
+
+    @staticmethod
+    def auditd_list_rules() -> str:
+        return "auditctl -l 2>/dev/null"
+
+    @staticmethod
+    def auditd_deploy_preset_rules(rules: List[str]) -> str:
+        rules_str = "\\n".join(rules)
+        return (
+            "mkdir -p /etc/audit/rules.d && "
+            f"printf '{rules_str}\\n' > /etc/audit/rules.d/99-admin-suite-security.rules && "
+            "( augenrules --load 2>/dev/null || auditctl -R /etc/audit/rules.d/99-admin-suite-security.rules 2>/dev/null || true ) && "
+            "echo 'Audit rules successfully deployed and loaded.'"
+        )
+
+    @staticmethod
+    def auditd_ausearch(filter_key: str = "", time_range: str = "today", lines: int = 60) -> str:
+        key_arg = f"-k {shlex.quote(filter_key)} " if filter_key else ""
+        return (
+            f"ausearch {key_arg}-ts {shlex.quote(time_range)} --format text 2>/dev/null | tail -n {int(lines)} || "
+            f"ausearch {key_arg}-ts {shlex.quote(time_range)} 2>/dev/null | tail -n {int(lines)}"
+        )
+
+    @staticmethod
+    def auditd_aureport(report_type: str = "summary", time_range: str = "today") -> str:
+        flag = "-s"
+        if report_type == "auth":
+            flag = "-au"
+        elif report_type == "account":
+            flag = "-m"
+        elif report_type == "failed":
+            flag = "--failed"
+        return f"aureport {flag} -ts {shlex.quote(time_range)} 2>/dev/null"
+
 
 class SecurityParsers:
     """Parsers for security tool outputs."""
@@ -1101,4 +1476,499 @@ class SecurityParsers:
 
         certs.sort(key=lambda c: c["days_left"])
         return certs
+
+    # ---------------- Distribution Detection Parser ----------------
+    @classmethod
+    def parse_os_release(cls, raw: str) -> Dict[str, str]:
+        """
+        Parses `SecurityCommands.detect_os()` output.
+        Returns:
+            {
+                "id": str,
+                "id_like": str,
+                "name": str,
+                "pretty_name": str,
+                "version_id": str,
+                "family": "rhel" | "debian" | "arch" | "suse" | "generic",
+                "pkg_manager": "dnf" | "yum" | "apt-get" | "pacman" | "zypper" | "auto",
+                "arch": str,
+            }
+        """
+        result = {
+            "id": "unknown",
+            "id_like": "",
+            "name": "Linux",
+            "pretty_name": "Linux Host",
+            "version_id": "",
+            "family": "generic",
+            "pkg_manager": "auto",
+            "arch": "x86_64",
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("PKG_MGR:"):
+                result["pkg_manager"] = line_s.split(":", 1)[1].strip()
+            elif "=" in line_s:
+                k, v = line_s.split("=", 1)
+                v = v.strip().strip('"').strip("'")
+                k = k.strip()
+                if k == "ID":
+                    result["id"] = v.lower()
+                elif k == "ID_LIKE":
+                    result["id_like"] = v.lower()
+                elif k == "NAME":
+                    result["name"] = v
+                elif k == "PRETTY_NAME":
+                    result["pretty_name"] = v
+                elif k == "VERSION_ID":
+                    result["version_id"] = v
+            elif line_s in ("x86_64", "aarch64", "armv7l", "i686", "s390x"):
+                result["arch"] = line_s
+
+        combined = f"{result['id']} {result['id_like']}".lower()
+        if any(x in combined for x in ("rhel", "centos", "rocky", "almalinux", "fedora", "amzn", "ol")):
+            result["family"] = "rhel"
+            if result["pkg_manager"] == "auto":
+                result["pkg_manager"] = "dnf"
+        elif any(x in combined for x in ("debian", "ubuntu", "kali", "linuxmint", "pop")):
+            result["family"] = "debian"
+            if result["pkg_manager"] == "auto":
+                result["pkg_manager"] = "apt-get"
+        elif "arch" in combined:
+            result["family"] = "arch"
+            if result["pkg_manager"] == "auto":
+                result["pkg_manager"] = "pacman"
+        elif any(x in combined for x in ("suse", "sles")):
+            result["family"] = "suse"
+            if result["pkg_manager"] == "auto":
+                result["pkg_manager"] = "zypper"
+
+        return result
+
+    # ---------------- AIDE Parsers ----------------
+    @classmethod
+    def parse_aide_probe(cls, raw: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "installed": False,
+            "aideinit": False,
+            "config": "none",
+            "db_exists": False,
+            "db_path": "",
+            "db_stat": "",
+            "db_new_exists": False,
+            "cron_scheduled": False,
+            "cron_file": "",
+            "log_exists": False,
+            "log_stat": "",
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("INSTALLED:"):
+                info["installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("AIDEINIT:"):
+                info["aideinit"] = "yes" in line_s.lower()
+            elif line_s.startswith("CONFIG:"):
+                info["config"] = line_s.split(":", 1)[1].strip()
+            elif line_s.startswith("DB_EXISTS:"):
+                info["db_exists"] = "yes" in line_s.lower()
+            elif line_s.startswith("DB_PATH:"):
+                info["db_path"] = line_s.split(":", 1)[1].strip()
+            elif line_s.startswith("DB_STAT:"):
+                info["db_stat"] = line_s.split(":", 1)[1].strip()
+            elif line_s.startswith("DB_NEW_EXISTS:"):
+                info["db_new_exists"] = "yes" in line_s.lower()
+            elif line_s.startswith("CRON_SCHEDULED:"):
+                info["cron_scheduled"] = "yes" in line_s.lower()
+            elif line_s.startswith("CRON_FILE:"):
+                info["cron_file"] = line_s.split(":", 1)[1].strip()
+            elif line_s.startswith("LOG_EXISTS:"):
+                info["log_exists"] = "yes" in line_s.lower()
+            elif line_s.startswith("LOG_STAT:"):
+                info["log_stat"] = line_s.split(":", 1)[1].strip()
+        return info
+
+    @classmethod
+    def parse_aide_check_output(cls, raw: str) -> Dict[str, Any]:
+        """
+        Parses `aide --check` output into structured entries and summary statistics.
+        """
+        data: Dict[str, Any] = {
+            "clean": "no differences" in raw.lower() or "all files ok" in raw.lower() or "looks okay" in raw.lower(),
+            "total_entries": 0,
+            "added": 0,
+            "removed": 0,
+            "changed": 0,
+            "entries": [],
+            "raw": raw,
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if "Total number of entries:" in line_s or "Total number of files:" in line_s:
+                try:
+                    m = re.search(r'\d+', line_s)
+                    if m:
+                        data["total_entries"] = int(m.group())
+                except Exception:
+                    pass
+            elif "Added entries:" in line_s:
+                try:
+                    m = re.search(r'\d+', line_s)
+                    if m:
+                        data["added"] = int(m.group())
+                except Exception:
+                    pass
+            elif "Removed entries:" in line_s:
+                try:
+                    m = re.search(r'\d+', line_s)
+                    if m:
+                        data["removed"] = int(m.group())
+                except Exception:
+                    pass
+            elif "Changed entries:" in line_s:
+                try:
+                    m = re.search(r'\d+', line_s)
+                    if m:
+                        data["changed"] = int(m.group())
+                except Exception:
+                    pass
+
+        current_section = ""
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("Added entries:"):
+                current_section = "Added"
+            elif line_s.startswith("Removed entries:"):
+                current_section = "Removed"
+            elif line_s.startswith("Changed entries:"):
+                current_section = "Changed"
+            elif line_s.startswith("Detailed information about changes:"):
+                current_section = "Details"
+            elif current_section in ("Added", "Removed", "Changed") and line_s.startswith("/"):
+                data["entries"].append({
+                    "status": current_section,
+                    "path": line_s,
+                    "details": f"File {current_section.lower()} according to baseline",
+                })
+            elif current_section == "Details" and (line_s.startswith("File:") or line_s.startswith("Directory:")):
+                parts = line_s.split(":", 1)
+                p = parts[1].strip() if len(parts) > 1 else ""
+                if p and not any(e["path"] == p for e in data["entries"]):
+                    data["entries"].append({
+                        "status": "Changed",
+                        "path": p,
+                        "details": "Modified attributes / cryptographic checksum",
+                    })
+
+        if data["added"] > 0 or data["removed"] > 0 or data["changed"] > 0:
+            data["clean"] = False
+        return data
+
+    # ---------------- fapolicyd Parsers ----------------
+    @classmethod
+    def parse_fapolicyd_probe(cls, raw: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "installed": False,
+            "cli_installed": False,
+            "service_state": "inactive",
+            "service_enabled": "disabled",
+            "config_exists": False,
+            "permissive": 0,
+            "integrity": "none",
+            "status_text": "",
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("INSTALLED:"):
+                info["installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("CLI_INSTALLED:"):
+                info["cli_installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("SERVICE_STATE:"):
+                info["service_state"] = line_s.split(":", 1)[1].strip().lower()
+            elif line_s.startswith("SERVICE_ENABLED:"):
+                info["service_enabled"] = line_s.split(":", 1)[1].strip().lower()
+            elif line_s.startswith("CONFIG_EXISTS:"):
+                info["config_exists"] = "yes" in line_s.lower()
+            elif line_s.startswith("permissive"):
+                try:
+                    m = re.search(r'\d+', line_s)
+                    if m:
+                        info["permissive"] = int(m.group())
+                except Exception:
+                    pass
+            elif line_s.startswith("integrity"):
+                parts = line_s.split("=", 1)
+                if len(parts) > 1:
+                    info["integrity"] = parts[1].strip()
+            elif any(w in line_s.lower() for w in ("rules", "trust", "database", "daemon")):
+                info["status_text"] += line_s + "\n"
+        return info
+
+    @classmethod
+    def parse_fapolicyd_denials(cls, raw: str) -> List[Dict[str, str]]:
+        denials: List[Dict[str, str]] = []
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if not line_s or line_s.startswith("----"):
+                continue
+            entry: Dict[str, str] = {
+                "timestamp": "",
+                "exe": "",
+                "comm": "",
+                "pid": "",
+                "uid": "",
+                "raw": line_s,
+            }
+            m_time = re.search(r'msg=audit\((\d+)\.', line_s)
+            if m_time:
+                import time
+                try:
+                    entry["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(m_time.group(1))))
+                except Exception:
+                    entry["timestamp"] = m_time.group(1)
+            else:
+                m_log_time = re.match(r'^([A-Z][a-z]{2}\s+\d+\s+\d+:\d+:\d+)', line_s)
+                if m_log_time:
+                    entry["timestamp"] = m_log_time.group(1)
+
+            m_exe = re.search(r'exe="?([^"\s]+)"?', line_s)
+            if m_exe:
+                entry["exe"] = m_exe.group(1)
+
+            m_comm = re.search(r'comm="?([^"\s]+)"?', line_s)
+            if m_comm:
+                entry["comm"] = m_comm.group(1)
+
+            m_pid = re.search(r'pid=(\d+)', line_s)
+            if m_pid:
+                entry["pid"] = m_pid.group(1)
+
+            m_uid = re.search(r'uid=(\d+)', line_s)
+            if m_uid:
+                entry["uid"] = m_uid.group(1)
+
+            if entry["exe"] or entry["comm"] or "fanotify" in line_s.lower() or "fapolicyd" in line_s.lower():
+                denials.append(entry)
+        return denials
+
+    # ---------------- OpenSCAP Parsers ----------------
+    @classmethod
+    def parse_openscap_probe(cls, raw: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "installed": False,
+            "datastreams": [],
+            "html_dir": "/var/www/html",
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("INSTALLED:"):
+                info["installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("DS:"):
+                ds = line_s.split(":", 1)[1].strip()
+                if ds and ds not in info["datastreams"]:
+                    info["datastreams"].append(ds)
+            elif line_s.startswith("HTML_DIR:"):
+                info["html_dir"] = line_s.split(":", 1)[1].strip()
+        return info
+
+    @classmethod
+    def parse_openscap_profiles(cls, raw: str) -> List[Dict[str, str]]:
+        profiles: List[Dict[str, str]] = []
+        cur_id = ""
+        cur_title = ""
+
+        def flush():
+            nonlocal cur_id, cur_title
+            if cur_id:
+                profiles.append({"id": cur_id, "title": cur_title or cur_id.split("content_profile_")[-1]})
+                cur_id = ""
+                cur_title = ""
+
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("Title:"):
+                if cur_id and cur_title:
+                    flush()
+                cur_title = line_s.split(":", 1)[1].strip()
+            m = re.search(r'(xccdf_org\.ssgproject\.content_profile_[a-zA-Z0-9_\-]+)', line_s)
+            if m:
+                if cur_id:
+                    flush()
+                cur_id = m.group(1)
+
+        flush()
+        return profiles
+
+    @classmethod
+    def parse_openscap_eval_output(cls, raw: str) -> Dict[str, Any]:
+        """
+        Parses `oscap xccdf eval` execution output.
+        """
+        data: Dict[str, Any] = {
+            "score": 0.0,
+            "passed": 0,
+            "failed": 0,
+            "notapplicable": 0,
+            "error": 0,
+            "total_rules": 0,
+            "rules": [],
+            "report_path": "",
+            "raw": raw,
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            m_score = re.search(r'Score:\s*([0-9\.]+)\s*%', line_s)
+            if m_score:
+                try:
+                    data["score"] = float(m_score.group(1))
+                except Exception:
+                    pass
+
+            m_rule = re.search(r'Rule:\s*([^\s]+)\s+Result:\s*([^\s]+)', line_s)
+            if m_rule:
+                rid = m_rule.group(1)
+                res = m_rule.group(2).lower()
+                data["rules"].append({"id": rid, "result": res})
+                if res == "pass":
+                    data["passed"] += 1
+                elif res == "fail":
+                    data["failed"] += 1
+                elif res in ("notapplicable", "na"):
+                    data["notapplicable"] += 1
+                else:
+                    data["error"] += 1
+                data["total_rules"] += 1
+            elif "OpenSCAP Error:" in line_s or "Error:" in line_s:
+                data["error"] += 1
+
+        if data["total_rules"] > 0 and data["score"] == 0.0 and (data["passed"] + data["failed"]) > 0:
+            data["score"] = round((data["passed"] / (data["passed"] + data["failed"])) * 100, 1)
+
+        return data
+
+    # ---------------- Auditd Parsers ----------------
+    @classmethod
+    def parse_auditd_probe(cls, raw: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "installed": False,
+            "ausearch_installed": False,
+            "aureport_installed": False,
+            "service_state": "inactive",
+            "service_enabled": "disabled",
+            "rules_count": 0,
+            "status_text": "",
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("INSTALLED:"):
+                info["installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("AUSEARCH_INSTALLED:"):
+                info["ausearch_installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("AUREPORT_INSTALLED:"):
+                info["aureport_installed"] = "yes" in line_s.lower()
+            elif line_s.startswith("SERVICE_STATE:"):
+                info["service_state"] = line_s.split(":", 1)[1].strip().lower()
+            elif line_s.startswith("SERVICE_ENABLED:"):
+                info["service_enabled"] = line_s.split(":", 1)[1].strip().lower()
+            elif line_s.isdigit():
+                try:
+                    info["rules_count"] = int(line_s)
+                except Exception:
+                    pass
+            elif any(w in line_s.lower() for w in ("enabled", "backlog", "pid", "rate_limit")):
+                info["status_text"] += line_s + "\n"
+        return info
+
+    @classmethod
+    def parse_auditd_rules(cls, raw: str) -> List[Dict[str, str]]:
+        rules: List[Dict[str, str]] = []
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if not line_s or "no rules" in line_s.lower():
+                continue
+            rule_entry: Dict[str, str] = {
+                "raw": line_s,
+                "type": "Watch" if "-w" in line_s else "Syscall",
+                "target": "",
+                "permissions": "",
+                "key": "",
+            }
+            m_w = re.search(r'-w\s+([^\s]+)', line_s)
+            if m_w:
+                rule_entry["target"] = m_w.group(1)
+            else:
+                m_s = re.search(r'-S\s+([^\s]+)', line_s)
+                if m_s:
+                    rule_entry["target"] = m_s.group(1)
+                else:
+                    rule_entry["target"] = line_s
+
+            m_p = re.search(r'-p\s+([^\s]+)', line_s)
+            if m_p:
+                rule_entry["permissions"] = m_p.group(1)
+
+            m_k = re.search(r'-k\s+([^\s]+)', line_s)
+            if m_k:
+                rule_entry["key"] = m_k.group(1)
+
+            rules.append(rule_entry)
+        return rules
+
+    @classmethod
+    def parse_ausearch_events(cls, raw: str) -> List[Dict[str, str]]:
+        events: List[Dict[str, str]] = []
+        for block in raw.split("----"):
+            block_s = block.strip()
+            if not block_s:
+                continue
+            ev: Dict[str, str] = {
+                "timestamp": "",
+                "type": "",
+                "key": "",
+                "comm": "",
+                "exe": "",
+                "name": "",
+                "success": "unknown",
+                "raw": block_s,
+            }
+            m_time = re.search(r'msg=audit\((\d+)\.', block_s)
+            if m_time:
+                import time
+                try:
+                    ev["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(m_time.group(1))))
+                except Exception:
+                    ev["timestamp"] = m_time.group(1)
+            else:
+                m_txt_time = re.search(r'time->([^\n]+)', block_s)
+                if m_txt_time:
+                    ev["timestamp"] = m_txt_time.group(1).strip()
+
+            m_type = re.search(r'type=([A-Z0-9_]+)', block_s)
+            if m_type:
+                ev["type"] = m_type.group(1)
+
+            m_key = re.search(r'key="?([^"\s]+)"?', block_s)
+            if m_key:
+                ev["key"] = m_key.group(1)
+
+            m_comm = re.search(r'comm="?([^"\s]+)"?', block_s)
+            if m_comm:
+                ev["comm"] = m_comm.group(1)
+
+            m_exe = re.search(r'exe="?([^"\s]+)"?', block_s)
+            if m_exe:
+                ev["exe"] = m_exe.group(1)
+
+            m_name = re.search(r'name="?([^"\s]+)"?', block_s)
+            if m_name:
+                ev["name"] = m_name.group(1)
+
+            if "success=yes" in block_s or "res=success" in block_s:
+                ev["success"] = "yes"
+            elif "success=no" in block_s or "res=failed" in block_s:
+                ev["success"] = "no"
+
+            if ev["type"] or ev["comm"] or ev["key"] or ev["exe"]:
+                events.append(ev)
+        return events
+
 

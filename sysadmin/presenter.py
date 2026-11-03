@@ -11,7 +11,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QCursor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSlider,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -41,6 +42,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.export import ReportExporter
 from admin_suite.sysadmin.commands import (
     build_journalctl_cmd,
     container_inspect_cmd,
@@ -71,7 +73,13 @@ from admin_suite.sysadmin.commands import (
     compose_build_cmd,
     container_exec_interactive_cmd,
     container_exec_noninteractive_cmd,
+    process_inspect_cmd,
+    process_kill_cmd,
+    process_renice_cmd,
+    service_action_cmd,
+    service_logs_cmd,
 )
+
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -4282,4 +4290,1570 @@ class SysAdminPerformanceWidget(QWidget):
             item_l.setFont(QFont("Sans", weight=QFont.Weight.Bold))
             self.dmesg_table.setItem(r_idx, 0, item_l)
             self.dmesg_table.setItem(r_idx, 1, QTableWidgetItem(msg))
+
+
+# ====================================================================
+# Safe execution helper for SysAdmin presenter widgets
+# ====================================================================
+def _safe_run_cmd(
+    run_cmd_fn: Optional[Callable],
+    cmd: str,
+    title: str = "Command",
+    callback: Optional[Callable[[str, int], None]] = None,
+    timeout: int = 60,
+    use_sudo: bool = True,
+    refresh_after: bool = True,
+) -> None:
+    """Executes a command across both SysAdminTab and AdminConsoleTab run_cmd_fn signatures."""
+    if not run_cmd_fn:
+        return
+    import inspect
+    try:
+        sig = inspect.signature(run_cmd_fn)
+        params = list(sig.parameters.keys())
+    except Exception:
+        params = []
+
+    if "title" in params:
+        # Matches SysAdminTab.execute_custom_cmd(self, cmd, title="Command", timeout=180, callback=..., refresh_after=True)
+        run_cmd_fn(cmd, title=title, timeout=timeout, callback=callback, refresh_after=refresh_after)
+    else:
+        # Matches AdminConsoleTab.execute_command(self, cmd, callback=..., use_sudo=True, timeout=60)
+        def console_cb(stdout: str, stderr: str, rc: int):
+            combined = stdout if rc == 0 else ((stdout + "\n" + stderr) if stdout else stderr)
+            if callback:
+                callback(combined, rc)
+        run_cmd_fn(cmd, callback=console_cb, use_sudo=use_sudo, timeout=timeout)
+
+
+# ====================================================================
+# 9. SysAdmin Users Widget & Dialogs
+# ====================================================================
+class UserDetailDialog(QDialog):
+    """Detailed popup viewer for an individual Linux user account."""
+
+    def __init__(self, record: dict[str, Any], theme: dict[str, str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"User Details — {record.get('username', 'Account')}")
+        self.resize(580, 440)
+        self.theme = theme
+        self.record = record
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # Header
+        head = QHBoxLayout()
+        icon_lbl = QLabel("👤")
+        icon_lbl.setStyleSheet("font-size: 26px; padding: 4px;")
+        head.addWidget(icon_lbl)
+
+        title_col = QVBoxLayout()
+        name_lbl = QLabel(f"<b>{record.get('username', '-')}</b> (UID {record.get('uid', '-')})")
+        name_lbl.setStyleSheet(f"font-size: 16px; color: {theme.get('accent', '#3daee9')};")
+        type_lbl = QLabel(f"Classification: <b>{record.get('acc_type', '-')}</b> | Status: <b>{record.get('status', '-')}</b>")
+        type_lbl.setStyleSheet("color: #aaa; font-size: 11px;")
+        title_col.addWidget(name_lbl)
+        title_col.addWidget(type_lbl)
+        head.addLayout(title_col, 1)
+        layout.addLayout(head)
+
+        # Form layout of attributes
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setSpacing(8)
+
+        form.addRow("<b>Username:</b>", QLabel(str(record.get("username", "-"))))
+        form.addRow("<b>UID / GID:</b>", QLabel(f"{record.get('uid', '-')} / {record.get('gid', '-')}"))
+        form.addRow("<b>Full Name / GECOS:</b>", QLabel(str(record.get("gecos", "-") or "None")))
+        form.addRow("<b>Privilege Level:</b>", QLabel(str(record.get("priv", "-"))))
+        form.addRow("<b>Active Session:</b>", QLabel(str(record.get("session_info", record.get("status", "-")))))
+        form.addRow("<b>Home Directory:</b>", QLabel(str(record.get("home", "-"))))
+        form.addRow("<b>Login Shell:</b>", QLabel(str(record.get("shell", "-"))))
+        layout.addLayout(form)
+
+        # Raw /etc/passwd record
+        layout.addWidget(QLabel("<b>Raw /etc/passwd Entry:</b>"))
+        raw_edit = QPlainTextEdit(record.get("raw_line", ""))
+        raw_edit.setReadOnly(True)
+        raw_edit.setFont(QFont("JetBrains Mono, Consolas, Monospace", 10))
+        raw_edit.setMaximumHeight(65)
+        layout.addWidget(raw_edit)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_cp_user = QPushButton("📋 Copy Username")
+        btn_cp_user.clicked.connect(lambda: QApplication.clipboard().setText(record.get("username", "")))
+        btn_row.addWidget(btn_cp_user)
+
+        btn_cp_home = QPushButton("📁 Copy Home Path")
+        btn_cp_home.clicked.connect(lambda: QApplication.clipboard().setText(record.get("home", "")))
+        btn_row.addWidget(btn_cp_home)
+
+        btn_cp_raw = QPushButton("📄 Copy Passwd Line")
+        btn_cp_raw.clicked.connect(lambda: QApplication.clipboard().setText(record.get("raw_line", "")))
+        btn_row.addWidget(btn_cp_raw)
+
+        btn_row.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+
+
+class SysAdminUsersWidget(QWidget):
+    """Formatted interactive presentation of Linux users, active sessions, and sudo privileges."""
+
+    def __init__(self, theme: dict[str, str], run_cmd_fn: Optional[Callable] = None, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.run_cmd_fn = run_cmd_fn
+        self._all_users: list[dict[str, Any]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        # Top KPI Cards
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(8)
+
+        self.card_total = _create_kpi_card("Total Accounts", "0", theme.get("accent", "#3daee9"), theme, "All System Accounts")
+        self.card_human = _create_kpi_card("Human Users", "0", theme.get("ok", "#0dbc79"), theme, "Interactive / UID >= 1000")
+        self.card_priv = _create_kpi_card("Privileged / Sudo", "0", "#e67e22", theme, "Sudo / Wheel / Root")
+        self.card_online = _create_kpi_card("Active Sessions", "0", "#9b59b6", theme, "Currently Logged In")
+
+        kpi_row.addWidget(self.card_total)
+        kpi_row.addWidget(self.card_human)
+        kpi_row.addWidget(self.card_priv)
+        kpi_row.addWidget(self.card_online)
+        layout.addLayout(kpi_row)
+
+        # Toolbar: Filter & Actions
+        tb = QHBoxLayout()
+        tb.setSpacing(6)
+
+        self.search_in = QLineEdit()
+        self.search_in.setPlaceholderText("🔍 Filter users by name, UID, shell, home...")
+        self.search_in.textChanged.connect(self._apply_filters)
+        tb.addWidget(self.search_in, 2)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("All Account Types", "all")
+        self.type_combo.addItem("Human Users (UID >= 1000)", "human")
+        self.type_combo.addItem("System Accounts (UID < 1000)", "system")
+        self.type_combo.addItem("Root Account (UID 0)", "root")
+        self.type_combo.currentIndexChanged.connect(self._apply_filters)
+        tb.addWidget(self.type_combo, 1)
+
+        self.status_combo = QComboBox()
+        self.status_combo.addItem("All Statuses", "all")
+        self.status_combo.addItem("● Online / Active Only", "online")
+        self.status_combo.addItem("Privileged (Sudo) Only", "priv")
+        self.status_combo.addItem("Interactive Shell Only", "shell")
+        self.status_combo.currentIndexChanged.connect(self._apply_filters)
+        tb.addWidget(self.status_combo, 1)
+
+        self.btn_inspect = QPushButton("🔍 Inspect Details")
+        self.btn_inspect.setToolTip("View detailed user permissions, groups, and home status")
+        self.btn_inspect.clicked.connect(self._inspect_selected_user)
+        tb.addWidget(self.btn_inspect)
+
+        self.btn_export = QPushButton("📊 Export")
+        self.btn_export.setToolTip("Export users table to CSV or JSON")
+        self.btn_export.clicked.connect(self._export_menu)
+        tb.addWidget(self.btn_export)
+
+        layout.addLayout(tb)
+
+        # Main Table
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels([
+            "Username", "UID", "GID", "Full Name / GECOS", "Account Type", "Privileges", "Status", "Home Directory", "Login Shell"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
+
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.itemDoubleClicked.connect(lambda: self._inspect_selected_user())
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+
+        layout.addWidget(self.table, 1)
+
+    def update_data(self, raw: str) -> None:
+        current_sec = "passwd"
+        passwd_lines = []
+        logged_in_users = set()
+        logged_in_details: dict[str, str] = {}
+        privileged_users = set()
+
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s == "=== PASSWD ===":
+                current_sec = "passwd"
+                continue
+            elif line_s == "=== LOGGED_IN ===":
+                current_sec = "logged_in"
+                continue
+            elif line_s == "=== PRIVILEGED ===":
+                current_sec = "privileged"
+                continue
+
+            if not line_s or line_s.startswith("#") or line_s.startswith("=="):
+                continue
+
+            if current_sec == "logged_in":
+                parts = line_s.split()
+                if parts:
+                    u = parts[0]
+                    logged_in_users.add(u)
+                    logged_in_details[u] = line_s
+            elif current_sec == "privileged":
+                if ":" in line_s:
+                    parts = line_s.split(":")
+                    if len(parts) >= 4 and parts[3]:
+                        for u in parts[3].split(","):
+                            if u.strip():
+                                privileged_users.add(u.strip())
+            else:
+                if ":" in line_s:
+                    passwd_lines.append(line_s)
+
+        parsed_users: list[dict[str, Any]] = []
+        for line in passwd_lines:
+            parts = line.split(":")
+            if len(parts) >= 7:
+                username = parts[0]
+                uid_str = parts[2]
+                gid_str = parts[3]
+                gecos = parts[4]
+                home = parts[5]
+                shell = parts[6]
+
+                try:
+                    uid = int(uid_str)
+                except ValueError:
+                    uid = 9999
+                try:
+                    gid = int(gid_str)
+                except ValueError:
+                    gid = 9999
+
+                if uid == 0:
+                    acc_type = "Root"
+                elif 1000 <= uid < 65534:
+                    acc_type = "Human"
+                else:
+                    acc_type = "System"
+
+                is_priv = "Yes (sudo)" if (username in privileged_users or uid == 0) else "Standard"
+                is_logged = "● Online" if username in logged_in_users else "Offline"
+                is_shell = not (shell.endswith("/nologin") or shell.endswith("/false"))
+
+                parsed_users.append({
+                    "username": username,
+                    "uid": uid,
+                    "gid": gid,
+                    "gecos": gecos,
+                    "acc_type": acc_type,
+                    "priv": is_priv,
+                    "status": is_logged,
+                    "home": home,
+                    "shell": shell,
+                    "interactive_shell": is_shell,
+                    "raw_line": line,
+                    "session_info": logged_in_details.get(username, is_logged),
+                })
+
+        self._all_users = parsed_users
+
+        # Update KPI Cards
+        total_cnt = len(parsed_users)
+        human_cnt = sum(1 for u in parsed_users if u["acc_type"] == "Human")
+        priv_cnt = sum(1 for u in parsed_users if u["priv"].startswith("Yes"))
+        online_cnt = len(logged_in_users)
+
+        _set_card_val(self.card_total, str(total_cnt), "All System Accounts")
+        _set_card_val(self.card_human, str(human_cnt), "Interactive / UID >= 1000")
+        _set_card_val(self.card_priv, str(priv_cnt), "Sudo / Wheel / Root")
+        _set_card_val(self.card_online, str(online_cnt), "Currently Logged In")
+
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        q = self.search_in.text().strip().lower()
+        t_filter = self.type_combo.currentData() or "all"
+        s_filter = self.status_combo.currentData() or "all"
+
+        filtered = []
+        for u in self._all_users:
+            if q:
+                match = (
+                    q in u["username"].lower()
+                    or q in str(u["uid"])
+                    or q in str(u["gid"])
+                    or q in u["gecos"].lower()
+                    or q in u["home"].lower()
+                    or q in u["shell"].lower()
+                )
+                if not match:
+                    continue
+
+            if t_filter == "human" and u["acc_type"] != "Human":
+                continue
+            elif t_filter == "system" and u["acc_type"] != "System":
+                continue
+            elif t_filter == "root" and u["acc_type"] != "Root":
+                continue
+
+            if s_filter == "online" and u["status"] != "● Online":
+                continue
+            elif s_filter == "priv" and not u["priv"].startswith("Yes"):
+                continue
+            elif s_filter == "shell" and not u["interactive_shell"]:
+                continue
+
+            filtered.append(u)
+
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(filtered))
+
+        theme = self.theme
+        for r_idx, u in enumerate(filtered):
+            # Username
+            it_user = QTableWidgetItem(u["username"])
+            it_user.setData(Qt.ItemDataRole.UserRole, u)  # Store full dict
+            it_user.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            self.table.setItem(r_idx, 0, it_user)
+
+            # UID (Numeric sortable)
+            it_uid = SortableTableWidgetItem(str(u["uid"]))
+            it_uid.setData(Qt.ItemDataRole.UserRole, u["uid"])
+            it_uid.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r_idx, 1, it_uid)
+
+            # GID (Numeric sortable)
+            it_gid = SortableTableWidgetItem(str(u["gid"]))
+            it_gid.setData(Qt.ItemDataRole.UserRole, u["gid"])
+            it_gid.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r_idx, 2, it_gid)
+
+            # GECOS
+            it_gecos = QTableWidgetItem(u["gecos"])
+            self.table.setItem(r_idx, 3, it_gecos)
+
+            # Account Type badge
+            it_type = QTableWidgetItem(u["acc_type"])
+            it_type.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if u["acc_type"] == "Human":
+                it_type.setForeground(QColor(theme.get("ok", "#0dbc79")))
+            elif u["acc_type"] == "Root":
+                it_type.setForeground(QColor(theme.get("danger", "#ff5555")))
+                it_type.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            else:
+                it_type.setForeground(QColor(theme.get("sub", "#888888")))
+            self.table.setItem(r_idx, 4, it_type)
+
+            # Privileges badge
+            it_priv = QTableWidgetItem(u["priv"])
+            it_priv.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if u["priv"].startswith("Yes"):
+                it_priv.setForeground(QColor(theme.get("accent", "#3daee9")))
+                it_priv.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            else:
+                it_priv.setForeground(QColor(theme.get("sub", "#888888")))
+            self.table.setItem(r_idx, 5, it_priv)
+
+            # Status badge
+            it_status = QTableWidgetItem(u["status"])
+            it_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if u["status"] == "● Online":
+                it_status.setForeground(QColor(theme.get("ok", "#0dbc79")))
+                it_status.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            else:
+                it_status.setForeground(QColor(theme.get("sub", "#888888")))
+            self.table.setItem(r_idx, 6, it_status)
+
+            # Home
+            it_home = QTableWidgetItem(u["home"])
+            self.table.setItem(r_idx, 7, it_home)
+
+            # Shell
+            it_shell = QTableWidgetItem(u["shell"])
+            if not u["interactive_shell"]:
+                it_shell.setForeground(QColor("#777777"))
+            self.table.setItem(r_idx, 8, it_shell)
+
+        self.table.setSortingEnabled(True)
+
+    def _get_selected_user_record(self) -> Optional[dict[str, Any]]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        if it:
+            return it.data(Qt.ItemDataRole.UserRole)
+        return None
+
+    def _inspect_selected_user(self) -> None:
+        rec = self._get_selected_user_record()
+        if not rec:
+            QMessageBox.information(self, "Inspect User", "Please select a user account row from the table first.")
+            return
+        dlg = UserDetailDialog(rec, self.theme, parent=self)
+        dlg.exec()
+
+    def _show_context_menu(self, pos) -> None:
+        rec = self._get_selected_user_record()
+        menu = QMenu(self)
+
+        act_inspect = menu.addAction("🔍 View User Details & Permissions...")
+        menu.addSeparator()
+        act_cp_user = menu.addAction("📋 Copy Username")
+        act_cp_home = menu.addAction("📁 Copy Home Directory")
+        act_cp_shell = menu.addAction("🐚 Copy Login Shell")
+        menu.addSeparator()
+        act_csv = menu.addAction("📊 Export Table to CSV...")
+        act_json = menu.addAction("📄 Export Table to JSON...")
+
+        chosen = menu.exec(self.table.mapToGlobal(pos))
+        if chosen == act_inspect and rec:
+            self._inspect_selected_user()
+        elif chosen == act_cp_user and rec:
+            QApplication.clipboard().setText(rec.get("username", ""))
+        elif chosen == act_cp_home and rec:
+            QApplication.clipboard().setText(rec.get("home", ""))
+        elif chosen == act_cp_shell and rec:
+            QApplication.clipboard().setText(rec.get("shell", ""))
+        elif chosen == act_csv:
+            ReportExporter.export_table_csv(self, self.table, "users_report.csv", "Export Users to CSV")
+        elif chosen == act_json:
+            ReportExporter.export_table_json(self, self.table, "users_report.json", "Export Users to JSON")
+
+    def _export_menu(self) -> None:
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        chosen = menu.exec(QCursor.pos())
+        if chosen == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "users_report.csv", "Export Users to CSV")
+        elif chosen == json_act:
+            ReportExporter.export_table_json(self, self.table, "users_report.json", "Export Users to JSON")
+
+
+# ====================================================================
+# 10. SysAdmin Services Widget & Dialogs
+# ====================================================================
+class ServiceLogsDialog(QDialog):
+    """Viewer for service status and recent journalctl unit logs."""
+
+    def __init__(self, unit: str, theme: dict[str, str], run_cmd_fn: Optional[Callable] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Service Logs & Status — {unit}")
+        self.resize(750, 520)
+        self.unit = unit
+        self.theme = theme
+        self.run_cmd_fn = run_cmd_fn
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        head = QHBoxLayout()
+        lbl = QLabel(f"⚙️ <b>{unit}</b>")
+        lbl.setStyleSheet(f"font-size: 15px; color: {theme.get('accent', '#3daee9')};")
+        head.addWidget(lbl)
+        head.addStretch()
+
+        self.btn_refresh = QPushButton("🔄 Refresh")
+        self.btn_refresh.clicked.connect(self._fetch_logs)
+        head.addWidget(self.btn_refresh)
+        layout.addLayout(head)
+
+        self.output_edit = QPlainTextEdit("Fetching status and logs...")
+        self.output_edit.setReadOnly(True)
+        self.output_edit.setFont(QFont("JetBrains Mono, Consolas, Monospace", 10))
+        layout.addWidget(self.output_edit, 1)
+
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("📋 Copy All")
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(self.output_edit.toPlainText()))
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch()
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+
+        self._fetch_logs()
+
+    def _fetch_logs(self):
+        if not self.run_cmd_fn:
+            self.output_edit.setPlainText("Command runner unavailable.")
+            return
+        cmd = service_logs_cmd(self.unit, lines=100)
+        self.output_edit.setPlainText(f"Loading status & logs for {self.unit}...")
+
+        def on_done(out: str, rc: int):
+            self.output_edit.setPlainText(out or "No output returned.")
+
+        _safe_run_cmd(self.run_cmd_fn, cmd, f"Logs: {self.unit}", callback=on_done, refresh_after=False)
+
+
+class SysAdminServicesWidget(QWidget):
+    """Formatted interactive manager for systemd services and SysV init daemons."""
+
+    def __init__(self, theme: dict[str, str], run_cmd_fn: Optional[Callable] = None, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.run_cmd_fn = run_cmd_fn
+        self._all_services: list[dict[str, str]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        # KPI row
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(8)
+
+        self.card_total = _create_kpi_card("Total Services", "0", theme.get("accent", "#3daee9"), theme, "Registered Units")
+        self.card_active = _create_kpi_card("Active / Running", "0", theme.get("ok", "#0dbc79"), theme, "Operational")
+        self.card_failed = _create_kpi_card("Failed / Error", "0", "#ff5555", theme, "Needs Attention")
+        self.card_inactive = _create_kpi_card("Inactive / Dead", "0", "#888888", theme, "Stopped / Exited")
+        self.card_init = _create_kpi_card("Init Subsystem", "Detecting...", "#9b59b6", theme, "Service Manager")
+
+        kpi_row.addWidget(self.card_total)
+        kpi_row.addWidget(self.card_active)
+        kpi_row.addWidget(self.card_failed)
+        kpi_row.addWidget(self.card_inactive)
+        kpi_row.addWidget(self.card_init)
+        layout.addLayout(kpi_row)
+
+        # Action bar
+        act_row = QHBoxLayout()
+        act_row.setSpacing(6)
+
+        self.btn_start = QPushButton("▶ Start")
+        self.btn_start.setToolTip("Start the selected service")
+        self.btn_start.setStyleSheet("background: #1b5e20; color: #4caf50; font-weight: bold; padding: 5px 12px; border-radius: 3px;")
+        self.btn_start.clicked.connect(lambda: self._service_action("start"))
+        act_row.addWidget(self.btn_start)
+
+        self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_stop.setToolTip("Stop the selected service")
+        self.btn_stop.setStyleSheet("background: #b71c1c; color: #ff8a80; font-weight: bold; padding: 5px 12px; border-radius: 3px;")
+        self.btn_stop.clicked.connect(lambda: self._service_action("stop"))
+        act_row.addWidget(self.btn_stop)
+
+        self.btn_restart = QPushButton("🔄 Restart")
+        self.btn_restart.setToolTip("Restart the selected service")
+        self.btn_restart.setStyleSheet(f"background: {theme.get('accent', '#3daee9')}; color: #ffffff; font-weight: bold; padding: 5px 12px; border-radius: 3px;")
+        self.btn_restart.clicked.connect(lambda: self._service_action("restart"))
+        act_row.addWidget(self.btn_restart)
+
+        self.btn_enable = QPushButton("🔌 Enable")
+        self.btn_enable.setToolTip("Enable service to start on system boot")
+        self.btn_enable.clicked.connect(lambda: self._service_action("enable"))
+        act_row.addWidget(self.btn_enable)
+
+        self.btn_disable = QPushButton("🚫 Disable")
+        self.btn_disable.setToolTip("Disable service from starting on system boot")
+        self.btn_disable.clicked.connect(lambda: self._service_action("disable"))
+        act_row.addWidget(self.btn_disable)
+
+        self.btn_logs = QPushButton("📜 View Logs")
+        self.btn_logs.setToolTip("Inspect systemctl status and recent journal logs for service")
+        self.btn_logs.clicked.connect(self._view_service_logs)
+        act_row.addWidget(self.btn_logs)
+
+        act_row.addStretch()
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("font-size: 11px; font-weight: bold; padding: 2px 6px;")
+        act_row.addWidget(self.status_lbl)
+
+        self.btn_export = QPushButton("📊 Export")
+        self.btn_export.setToolTip("Export services table to CSV or JSON")
+        self.btn_export.clicked.connect(self._export_menu)
+        act_row.addWidget(self.btn_export)
+
+        layout.addLayout(act_row)
+
+        # Filters
+        flt_row = QHBoxLayout()
+        flt_row.setSpacing(6)
+
+        self.search_in = QLineEdit()
+        self.search_in.setPlaceholderText("🔍 Filter services by unit name or description...")
+        self.search_in.textChanged.connect(self._apply_filters)
+        flt_row.addWidget(self.search_in, 2)
+
+        self.state_combo = QComboBox()
+        self.state_combo.addItem("All Service States", "all")
+        self.state_combo.addItem("Active / Running", "active")
+        self.state_combo.addItem("Failed / Error", "failed")
+        self.state_combo.addItem("Inactive / Dead", "inactive")
+        self.state_combo.currentIndexChanged.connect(self._apply_filters)
+        flt_row.addWidget(self.state_combo, 1)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("All Unit Types", "all")
+        self.type_combo.addItem("Services (.service)", "service")
+        self.type_combo.addItem("Sockets (.socket)", "socket")
+        self.type_combo.addItem("Targets (.target)", "target")
+        self.type_combo.currentIndexChanged.connect(self._apply_filters)
+        flt_row.addWidget(self.type_combo, 1)
+
+        layout.addLayout(flt_row)
+
+        # Table
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels([
+            "Unit / Service Name", "Load State", "Active State", "Sub State", "Description"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.itemDoubleClicked.connect(lambda: self._view_service_logs())
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+
+        layout.addWidget(self.table, 1)
+
+    def update_data(self, raw: str) -> None:
+        services: list[dict[str, str]] = []
+        is_sysv = False
+        sysv_re = re.compile(r'^\s*\[\s*([+\-?])\s*\]\s+(\S+)')
+
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if not line_s or line_s.startswith("==") or line_s.startswith("--"):
+                continue
+
+            m = sysv_re.match(line_s)
+            if m:
+                is_sysv = True
+                st_char, s_name = m.group(1), m.group(2)
+                if st_char == "+":
+                    active = "active"
+                    sub = "running"
+                    desc = "SysV Init Daemon (running)"
+                elif st_char == "-":
+                    active = "inactive"
+                    sub = "stopped"
+                    desc = "SysV Init Daemon (stopped)"
+                else:
+                    active = "unknown"
+                    sub = "unknown"
+                    desc = "SysV Init Daemon (status unknown)"
+                services.append({
+                    "unit": s_name,
+                    "load": "loaded",
+                    "active": active,
+                    "sub": sub,
+                    "desc": desc,
+                })
+                continue
+
+            parts = line_s.split(None, 4)
+            if len(parts) >= 4:
+                unit = parts[0]
+                if not (unit.endswith(".service") or unit.endswith(".socket") or unit.endswith(".target") or "." in unit):
+                    continue
+                load = parts[1]
+                active = parts[2]
+                sub = parts[3]
+                desc = parts[4] if len(parts) > 4 else ""
+                services.append({
+                    "unit": unit,
+                    "load": load,
+                    "active": active,
+                    "sub": sub,
+                    "desc": desc,
+                })
+
+        self._all_services = services
+
+        # Compute KPI Metrics
+        total_cnt = len(services)
+        active_cnt = sum(1 for s in services if s["active"] == "active")
+        failed_cnt = sum(1 for s in services if s["active"] == "failed")
+        inactive_cnt = sum(1 for s in services if s["active"] in ("inactive", "dead", "stopped"))
+        init_type = "SysV init" if is_sysv else "systemd"
+
+        _set_card_val(self.card_total, str(total_cnt), "Registered Units")
+        _set_card_val(self.card_active, str(active_cnt), "Operational")
+        _set_card_val(self.card_failed, str(failed_cnt), "Needs Attention" if failed_cnt > 0 else "All Clean")
+        if failed_cnt > 0:
+            self.card_failed.findChild(QLabel, "val_lbl").setStyleSheet("font-size: 15px; font-weight: bold; color: #ff5555;")
+        else:
+            self.card_failed.findChild(QLabel, "val_lbl").setStyleSheet("font-size: 15px; font-weight: bold; color: #0dbc79;")
+
+        _set_card_val(self.card_inactive, str(inactive_cnt), "Stopped / Exited")
+        _set_card_val(self.card_init, init_type, "Service Manager")
+
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        q = self.search_in.text().strip().lower()
+        st_filter = self.state_combo.currentData() or "all"
+        tp_filter = self.type_combo.currentData() or "all"
+
+        filtered = []
+        for s in self._all_services:
+            if q:
+                match = q in s["unit"].lower() or q in s["desc"].lower()
+                if not match:
+                    continue
+
+            if st_filter == "active" and s["active"] != "active":
+                continue
+            elif st_filter == "failed" and s["active"] != "failed":
+                continue
+            elif st_filter == "inactive" and s["active"] not in ("inactive", "dead", "stopped"):
+                continue
+
+            if tp_filter == "service" and not s["unit"].endswith(".service"):
+                continue
+            elif tp_filter == "socket" and not s["unit"].endswith(".socket"):
+                continue
+            elif tp_filter == "target" and not s["unit"].endswith(".target"):
+                continue
+
+            filtered.append(s)
+
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(filtered))
+
+        theme = self.theme
+        for r_idx, s in enumerate(filtered):
+            # Unit Name
+            it_unit = QTableWidgetItem(s["unit"])
+            it_unit.setData(Qt.ItemDataRole.UserRole, s)
+            it_unit.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            self.table.setItem(r_idx, 0, it_unit)
+
+            # Load
+            it_load = QTableWidgetItem(s["load"])
+            self.table.setItem(r_idx, 1, it_load)
+
+            # Active State
+            it_act = QTableWidgetItem(s["active"])
+            it_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if s["active"] == "active":
+                it_act.setForeground(QColor(theme.get("ok", "#0dbc79")))
+            elif s["active"] == "failed":
+                it_act.setForeground(QColor(theme.get("danger", "#ff5555")))
+                it_act.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            elif s["active"] in ("activating", "reloading"):
+                it_act.setForeground(QColor("#f39c12"))
+            else:
+                it_act.setForeground(QColor(theme.get("sub", "#888888")))
+            self.table.setItem(r_idx, 2, it_act)
+
+            # Sub State
+            it_sub = QTableWidgetItem(s["sub"])
+            if s["sub"] == "running":
+                it_sub.setForeground(QColor(theme.get("ok", "#0dbc79")))
+            elif s["sub"] == "failed":
+                it_sub.setForeground(QColor(theme.get("danger", "#ff5555")))
+            self.table.setItem(r_idx, 3, it_sub)
+
+            # Description
+            it_desc = QTableWidgetItem(s["desc"])
+            self.table.setItem(r_idx, 4, it_desc)
+
+        self.table.setSortingEnabled(True)
+
+    def _get_selected_service(self) -> Optional[dict[str, str]]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        if it:
+            return it.data(Qt.ItemDataRole.UserRole)
+        return None
+
+    def _service_action(self, action: str) -> None:
+        svc = self._get_selected_service()
+        if not svc:
+            QMessageBox.information(self, "Service Action", "Please select a service row first.")
+            return
+
+        unit = svc["unit"]
+        if action in ("stop", "disable"):
+            ans = QMessageBox.question(
+                self,
+                f"Confirm {action.capitalize()}",
+                f"Are you sure you want to {action.upper()} service '{unit}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        if not self.run_cmd_fn:
+            QMessageBox.information(self, "Service Action", "Command runner is unavailable.")
+            return
+
+        cmd = service_action_cmd(unit, action)
+        self.status_lbl.setText(f"⏳ Executing {action} on {unit}...")
+        self.status_lbl.setStyleSheet(f"color: {self.theme.get('accent', '#3daee9')};")
+
+        def on_done(out: str, rc: int):
+            if rc == 0:
+                self.status_lbl.setText(f"✅ {action.capitalize()} succeeded on {unit}")
+                self.status_lbl.setStyleSheet(f"color: {self.theme.get('ok', '#0dbc79')};")
+            else:
+                self.status_lbl.setText(f"❌ {action.capitalize()} failed on {unit} (rc={rc})")
+                self.status_lbl.setStyleSheet("color: #ff5555;")
+
+        _safe_run_cmd(self.run_cmd_fn, cmd, f"Service {action}: {unit}", callback=on_done, refresh_after=True)
+
+    def _view_service_logs(self) -> None:
+        svc = self._get_selected_service()
+        if not svc:
+            QMessageBox.information(self, "Service Logs", "Please select a service row first.")
+            return
+        dlg = ServiceLogsDialog(svc["unit"], self.theme, run_cmd_fn=self.run_cmd_fn, parent=self)
+        dlg.exec()
+
+    def _show_context_menu(self, pos) -> None:
+        svc = self._get_selected_service()
+        menu = QMenu(self)
+
+        act_start = menu.addAction("▶ Start Service")
+        act_stop = menu.addAction("⏹ Stop Service")
+        act_restart = menu.addAction("🔄 Restart Service")
+        menu.addSeparator()
+        act_enable = menu.addAction("🔌 Enable on Boot")
+        act_disable = menu.addAction("🚫 Disable on Boot")
+        menu.addSeparator()
+        act_logs = menu.addAction("📜 View Status & Logs...")
+        act_cp_unit = menu.addAction("📋 Copy Unit Name")
+        menu.addSeparator()
+        act_csv = menu.addAction("📊 Export Table to CSV...")
+        act_json = menu.addAction("📄 Export Table to JSON...")
+
+        chosen = menu.exec(self.table.mapToGlobal(pos))
+        if chosen == act_start and svc:
+            self._service_action("start")
+        elif chosen == act_stop and svc:
+            self._service_action("stop")
+        elif chosen == act_restart and svc:
+            self._service_action("restart")
+        elif chosen == act_enable and svc:
+            self._service_action("enable")
+        elif chosen == act_disable and svc:
+            self._service_action("disable")
+        elif chosen == act_logs and svc:
+            self._view_service_logs()
+        elif chosen == act_cp_unit and svc:
+            QApplication.clipboard().setText(svc.get("unit", ""))
+        elif chosen == act_csv:
+            ReportExporter.export_table_csv(self, self.table, "services_report.csv", "Export Services to CSV")
+        elif chosen == act_json:
+            ReportExporter.export_table_json(self, self.table, "services_report.json", "Export Services to JSON")
+
+    def _export_menu(self) -> None:
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        chosen = menu.exec(QCursor.pos())
+        if chosen == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "services_report.csv", "Export Services to CSV")
+        elif chosen == json_act:
+            ReportExporter.export_table_json(self, self.table, "services_report.json", "Export Services to JSON")
+
+
+# ====================================================================
+# 11. SysAdmin Processes Widget & Dialogs
+# ====================================================================
+class ProcessDetailDialog(QDialog):
+    """Viewer for Linux process details, memory layout, open sockets/files, and limits."""
+
+    def __init__(self, record: dict[str, Any], theme: dict[str, str], run_cmd_fn: Optional[Callable] = None, parent=None):
+        super().__init__(parent)
+        pid = record.get("pid", 0)
+        user = record.get("user", "-")
+        self.setWindowTitle(f"Process Inspector — PID {pid} ({user})")
+        self.resize(750, 540)
+        self.record = record
+        self.pid = pid
+        self.theme = theme
+        self.run_cmd_fn = run_cmd_fn
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # Header
+        head = QHBoxLayout()
+        cmd_title = record.get("cmd", "-")[:45]
+        p_lbl = QLabel(f"⚡ <b>PID {pid}</b> — {cmd_title}")
+        p_lbl.setStyleSheet(f"font-size: 15px; color: {theme.get('accent', '#3daee9')};")
+        head.addWidget(p_lbl)
+        head.addStretch()
+
+        kpi_cpu = QLabel(f"CPU: <b>{record.get('cpu', '0')}%</b> | MEM: <b>{record.get('mem', '0')}%</b> (RSS: {record.get('rss', '-')} KB)")
+        kpi_cpu.setStyleSheet("color: #aaa; font-size: 12px;")
+        head.addWidget(kpi_cpu)
+        layout.addLayout(head)
+
+        # Tabs: Overview vs /proc Deep Inspection
+        tabs = QTabWidget()
+
+        # Tab 1: Overview
+        tab_ov = QWidget()
+        l_ov = QVBoxLayout(tab_ov)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.addRow("<b>PID:</b>", QLabel(str(pid)))
+        form.addRow("<b>Owner (User):</b>", QLabel(str(record.get("user", "-"))))
+        form.addRow("<b>CPU Usage:</b>", QLabel(f"{record.get('cpu', '0')}%"))
+        form.addRow("<b>Memory Usage:</b>", QLabel(f"{record.get('mem', '0')}% (RSS: {record.get('rss', '-')} KB, VSZ: {record.get('vsz', '-')} KB)"))
+        form.addRow("<b>Process State (STAT):</b>", QLabel(str(record.get("stat", "-"))))
+        form.addRow("<b>TTY:</b>", QLabel(str(record.get("tty", "-"))))
+        form.addRow("<b>Started:</b>", QLabel(str(record.get("start", "-"))))
+        form.addRow("<b>CPU Time:</b>", QLabel(str(record.get("time", "-"))))
+        form.addRow("<b>Command Line:</b>", QLabel(str(record.get("cmd", "-"))))
+        l_ov.addLayout(form)
+        l_ov.addStretch()
+        tabs.addTab(tab_ov, "📋 Overview")
+
+        # Tab 2: /proc Status & Sockets
+        tab_proc = QWidget()
+        l_proc = QVBoxLayout(tab_proc)
+        self.proc_edit = QPlainTextEdit("Fetching process details from /proc...")
+        self.proc_edit.setReadOnly(True)
+        self.proc_edit.setFont(QFont("JetBrains Mono, Consolas, Monospace", 10))
+        l_proc.addWidget(self.proc_edit, 1)
+
+        btn_ref_proc = QPushButton("🔄 Refresh Inspection")
+        btn_ref_proc.clicked.connect(self._fetch_proc_data)
+        l_proc.addWidget(btn_ref_proc)
+        tabs.addTab(tab_proc, "🔍 System Internals (/proc & lsof)")
+
+        layout.addWidget(tabs, 1)
+
+        # Action buttons
+        btn_row = QHBoxLayout()
+        btn_term = QPushButton("🛑 Terminate (15)")
+        btn_term.setStyleSheet("background: #d35400; color: #fff; font-weight: bold; padding: 4px 10px; border-radius: 3px;")
+        btn_term.clicked.connect(self._term_proc)
+        btn_row.addWidget(btn_term)
+
+        btn_kill = QPushButton("⚡ Force Kill (9)")
+        btn_kill.setStyleSheet("background: #c0392b; color: #fff; font-weight: bold; padding: 4px 10px; border-radius: 3px;")
+        btn_kill.clicked.connect(self._kill_proc)
+        btn_row.addWidget(btn_kill)
+
+        btn_cp_cmd = QPushButton("📋 Copy Command")
+        btn_cp_cmd.clicked.connect(lambda: QApplication.clipboard().setText(record.get("cmd", "")))
+        btn_row.addWidget(btn_cp_cmd)
+
+        btn_row.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+
+        self._fetch_proc_data()
+
+    def _fetch_proc_data(self):
+        if not self.run_cmd_fn:
+            self.proc_edit.setPlainText("Command runner unavailable.")
+            return
+        cmd = process_inspect_cmd(self.pid)
+        self.proc_edit.setPlainText(f"Inspecting PID {self.pid}...")
+
+        def on_done(out: str, rc: int):
+            self.proc_edit.setPlainText(out or "No process details returned.")
+
+        _safe_run_cmd(self.run_cmd_fn, cmd, f"Inspect PID {self.pid}", callback=on_done, refresh_after=False)
+
+    def _term_proc(self):
+        if QMessageBox.question(self, "Confirm Terminate", f"Send SIGTERM (15) to PID {self.pid}?") == QMessageBox.StandardButton.Yes:
+            _safe_run_cmd(self.run_cmd_fn, process_kill_cmd(self.pid, 15), f"SIGTERM PID {self.pid}")
+            self.accept()
+
+    def _kill_proc(self):
+        if QMessageBox.question(self, "Confirm Force Kill", f"Send SIGKILL (9) to PID {self.pid}?") == QMessageBox.StandardButton.Yes:
+            _safe_run_cmd(self.run_cmd_fn, process_kill_cmd(self.pid, 9), f"SIGKILL PID {self.pid}")
+            self.accept()
+
+
+class ProcessReniceDialog(QDialog):
+    """Dialog to adjust Linux process priority (nice level -20 to 19)."""
+
+    def __init__(self, pid: int, user: str, cmd_name: str, theme: dict[str, str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Renice Process — PID {pid}")
+        self.resize(420, 240)
+        self.pid = pid
+        self.theme = theme
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        lbl = QLabel(f"Adjust priority for PID <b>{pid}</b> (<code>{cmd_name[:35]}</code>):")
+        lbl.setStyleSheet("font-size: 13px;")
+        layout.addWidget(lbl)
+
+        val_row = QHBoxLayout()
+        val_row.addWidget(QLabel("Priority Level (Nice):"))
+        self.spin = QSpinBox()
+        self.spin.setRange(-20, 19)
+        self.spin.setValue(0)
+        val_row.addWidget(self.spin)
+        layout.addLayout(val_row)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(-20, 19)
+        self.slider.setValue(0)
+        self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider.setTickInterval(5)
+        self.slider.valueChanged.connect(self.spin.setValue)
+        self.spin.valueChanged.connect(self.slider.setValue)
+        layout.addWidget(self.slider)
+
+        self.desc_lbl = QLabel("0: Normal priority")
+        self.desc_lbl.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.desc_lbl)
+
+        self.spin.valueChanged.connect(self._update_desc)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        self.btn_apply = QPushButton("Apply Priority")
+        self.btn_apply.setStyleSheet(f"background: {theme.get('accent', '#3daee9')}; color: #ffffff; font-weight: bold; padding: 4px 12px; border-radius: 3px;")
+        self.btn_apply.clicked.connect(self.accept)
+        btn_row.addWidget(self.btn_apply)
+
+        layout.addLayout(btn_row)
+
+    def _update_desc(self, val: int):
+        if val < 0:
+            self.desc_lbl.setText(f"{val}: Higher priority / more CPU time (requires root/sudo)")
+            self.desc_lbl.setStyleSheet("color: #ffa726; font-size: 11px; font-weight: bold;")
+        elif val > 0:
+            self.desc_lbl.setText(f"{val}: Lower priority / background task (friendly to other processes)")
+            self.desc_lbl.setStyleSheet("color: #81c784; font-size: 11px;")
+        else:
+            self.desc_lbl.setText("0: Normal priority default")
+            self.desc_lbl.setStyleSheet("color: #888; font-size: 11px;")
+
+    def get_priority(self) -> int:
+        return self.spin.value()
+
+
+class SysAdminProcessesWidget(QWidget):
+    """Formatted interactive Linux process explorer and task manager."""
+
+    def __init__(self, theme: dict[str, str], run_cmd_fn: Optional[Callable] = None, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.run_cmd_fn = run_cmd_fn
+        self._all_processes: list[dict[str, Any]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        # KPI row
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(8)
+
+        self.card_total = _create_kpi_card("Total Processes", "0", theme.get("accent", "#3daee9"), theme, "Running / Sleeping")
+        self.card_top_cpu = _create_kpi_card("Top CPU", "-", "#ff5555", theme, "Max CPU Consumer")
+        self.card_top_mem = _create_kpi_card("Top Memory", "-", "#e67e22", theme, "Max Memory Consumer")
+        self.card_users = _create_kpi_card("Active Users", "0", theme.get("ok", "#0dbc79"), theme, "Process Owners")
+        self.card_zombies = _create_kpi_card("Zombies / Defunct", "0", "#9b59b6", theme, "Defunct Processes")
+
+        kpi_row.addWidget(self.card_total)
+        kpi_row.addWidget(self.card_top_cpu)
+        kpi_row.addWidget(self.card_top_mem)
+        kpi_row.addWidget(self.card_users)
+        kpi_row.addWidget(self.card_zombies)
+        layout.addLayout(kpi_row)
+
+        # Action toolbar
+        act_row = QHBoxLayout()
+        act_row.setSpacing(6)
+
+        self.btn_term = QPushButton("🛑 Terminate (15)")
+        self.btn_term.setToolTip("Send SIGTERM (15) to request graceful process termination")
+        self.btn_term.setStyleSheet("background: #d35400; color: #fff; font-weight: bold; padding: 5px 12px; border-radius: 3px;")
+        self.btn_term.clicked.connect(self._terminate_process)
+        act_row.addWidget(self.btn_term)
+
+        self.btn_kill = QPushButton("⚡ Force Kill (9)")
+        self.btn_kill.setToolTip("Send SIGKILL (9) to immediately terminate unresponsive process")
+        self.btn_kill.setStyleSheet("background: #b71c1c; color: #ff8a80; font-weight: bold; padding: 5px 12px; border-radius: 3px;")
+        self.btn_kill.clicked.connect(self._force_kill_process)
+        act_row.addWidget(self.btn_kill)
+
+        self.btn_renice = QPushButton("⚖️ Renice Priority")
+        self.btn_renice.setToolTip("Change execution priority / nice level")
+        self.btn_renice.clicked.connect(self._renice_process)
+        act_row.addWidget(self.btn_renice)
+
+        self.btn_inspect = QPushButton("🔍 Inspect Process")
+        self.btn_inspect.setToolTip("Inspect process details, sockets, open files, and /proc metrics")
+        self.btn_inspect.clicked.connect(self._inspect_selected_process)
+        act_row.addWidget(self.btn_inspect)
+
+        act_row.addStretch()
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("font-size: 11px; font-weight: bold; padding: 2px 6px;")
+        act_row.addWidget(self.status_lbl)
+
+        self.btn_export = QPushButton("📊 Export")
+        self.btn_export.setToolTip("Export processes table to CSV or JSON")
+        self.btn_export.clicked.connect(self._export_menu)
+        act_row.addWidget(self.btn_export)
+
+        layout.addLayout(act_row)
+
+        # Filter toolbar
+        flt_row = QHBoxLayout()
+        flt_row.setSpacing(6)
+
+        self.search_in = QLineEdit()
+        self.search_in.setPlaceholderText("🔍 Filter by PID, name, user, command...")
+        self.search_in.textChanged.connect(self._apply_filters)
+        flt_row.addWidget(self.search_in, 2)
+
+        self.user_combo = QComboBox()
+        self.user_combo.addItem("All Users", "all")
+        self.user_combo.currentIndexChanged.connect(self._apply_filters)
+        flt_row.addWidget(self.user_combo, 1)
+
+        self.thresh_combo = QComboBox()
+        self.thresh_combo.addItem("All Processes", "all")
+        self.thresh_combo.addItem("Active (CPU > 0%)", "active_cpu")
+        self.thresh_combo.addItem("High CPU (>= 5%)", "high_cpu")
+        self.thresh_combo.addItem("High Memory (>= 2%)", "high_mem")
+        self.thresh_combo.addItem("Zombies (STAT Z)", "zombies")
+        self.thresh_combo.currentIndexChanged.connect(self._apply_filters)
+        flt_row.addWidget(self.thresh_combo, 1)
+
+        layout.addLayout(flt_row)
+
+        # Table
+        self.table = QTableWidget(0, 11)
+        self.table.setHorizontalHeaderLabels([
+            "User", "PID", "%CPU", "%MEM", "VSZ (KB)", "RSS (KB)", "TTY", "STAT", "START", "TIME", "Command"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch)
+
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.itemDoubleClicked.connect(lambda: self._inspect_selected_process())
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+
+        layout.addWidget(self.table, 1)
+
+    def update_data(self, raw: str) -> None:
+        lines = [l for l in raw.splitlines() if l.strip()]
+        if not lines:
+            self.table.setRowCount(0)
+            return
+
+        header_idx = -1
+        for idx, l in enumerate(lines):
+            if "USER" in l and "PID" in l:
+                header_idx = idx
+                break
+        if header_idx == -1:
+            header_idx = 0
+
+        procs: list[dict[str, Any]] = []
+        users: set[str] = set()
+        top_cpu = -1.0
+        top_cpu_str = "-"
+        top_mem = -1.0
+        top_mem_str = "-"
+        zombie_cnt = 0
+
+        for l in lines[header_idx + 1:]:
+            if l.startswith("==") or l.startswith("--"):
+                continue
+            parts = l.split(None, 10)
+            if len(parts) >= 11:
+                u, pid_s, cpu_s, mem_s, vsz_s, rss_s, tty, stat, start, tm, cmd = parts
+                try:
+                    pid = int(pid_s)
+                except ValueError:
+                    pid = 0
+                try:
+                    cpu = float(cpu_s)
+                except ValueError:
+                    cpu = 0.0
+                try:
+                    mem = float(mem_s)
+                except ValueError:
+                    mem = 0.0
+                try:
+                    vsz = int(vsz_s)
+                except ValueError:
+                    vsz = 0
+                try:
+                    rss = int(rss_s)
+                except ValueError:
+                    rss = 0
+
+                cmd_base = cmd.split()[0] if cmd else "-"
+                if "/" in cmd_base:
+                    cmd_base = cmd_base.split("/")[-1]
+
+                if cpu > top_cpu:
+                    top_cpu = cpu
+                    top_cpu_str = f"{cmd_base} ({cpu}%)"
+                if mem > top_mem:
+                    top_mem = mem
+                    top_mem_str = f"{cmd_base} ({mem}%)"
+
+                if "Z" in stat:
+                    zombie_cnt += 1
+                users.add(u)
+
+                procs.append({
+                    "user": u, "pid": pid, "cpu": cpu, "mem": mem,
+                    "vsz": vsz, "rss": rss, "tty": tty, "stat": stat,
+                    "start": start, "time": tm, "cmd": cmd,
+                    "cmd_base": cmd_base,
+                })
+
+        self._all_processes = procs
+
+        # Populate user combo
+        cur_user = self.user_combo.currentText()
+        self.user_combo.blockSignals(True)
+        self.user_combo.clear()
+        self.user_combo.addItem("All Users", "all")
+        for u in sorted(users):
+            self.user_combo.addItem(u, u)
+        # Restore selection if possible
+        idx = self.user_combo.findText(cur_user)
+        if idx >= 0:
+            self.user_combo.setCurrentIndex(idx)
+        self.user_combo.blockSignals(False)
+
+        # Update KPI Cards
+        _set_card_val(self.card_total, str(len(procs)), "Running / Sleeping")
+        _set_card_val(self.card_top_cpu, top_cpu_str, "Max CPU Consumer")
+        _set_card_val(self.card_top_mem, top_mem_str, "Max Memory Consumer")
+        _set_card_val(self.card_users, str(len(users)), "Active Owners")
+        _set_card_val(self.card_zombies, str(zombie_cnt), "Defunct Processes" if zombie_cnt > 0 else "None Active")
+
+        lbl_z = self.card_zombies.findChild(QLabel, "val_lbl")
+        if lbl_z:
+            if zombie_cnt > 0:
+                lbl_z.setStyleSheet("font-size: 15px; font-weight: bold; color: #ff5555;")
+            else:
+                lbl_z.setStyleSheet("font-size: 15px; font-weight: bold; color: #0dbc79;")
+
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        q = self.search_in.text().strip().lower()
+        u_filter = self.user_combo.currentData() or "all"
+        th_filter = self.thresh_combo.currentData() or "all"
+
+        filtered = []
+        for p in self._all_processes:
+            if q:
+                match = (
+                    q in str(p["pid"])
+                    or q in p["user"].lower()
+                    or q in p["cmd"].lower()
+                    or q in p["cmd_base"].lower()
+                )
+                if not match:
+                    continue
+
+            if u_filter != "all" and p["user"] != u_filter:
+                continue
+
+            if th_filter == "active_cpu" and p["cpu"] <= 0.0:
+                continue
+            elif th_filter == "high_cpu" and p["cpu"] < 5.0:
+                continue
+            elif th_filter == "high_mem" and p["mem"] < 2.0:
+                continue
+            elif th_filter == "zombies" and "Z" not in p["stat"]:
+                continue
+
+            filtered.append(p)
+
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(filtered))
+
+        theme = self.theme
+        for r_idx, p in enumerate(filtered):
+            # User
+            it_user = QTableWidgetItem(p["user"])
+            it_user.setData(Qt.ItemDataRole.UserRole, p)
+            self.table.setItem(r_idx, 0, it_user)
+
+            # PID (Sortable)
+            it_pid = SortableTableWidgetItem(str(p["pid"]))
+            it_pid.setData(Qt.ItemDataRole.UserRole, p["pid"])
+            it_pid.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r_idx, 1, it_pid)
+
+            # %CPU (Sortable)
+            it_cpu = SortableTableWidgetItem(f"{p['cpu']:.1f}")
+            it_cpu.setData(Qt.ItemDataRole.UserRole, p["cpu"])
+            it_cpu.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if p["cpu"] >= 50.0:
+                it_cpu.setForeground(QColor("#ff5555"))
+                it_cpu.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            elif p["cpu"] >= 10.0:
+                it_cpu.setForeground(QColor("#ffa726"))
+            self.table.setItem(r_idx, 2, it_cpu)
+
+            # %MEM (Sortable)
+            it_mem = SortableTableWidgetItem(f"{p['mem']:.1f}")
+            it_mem.setData(Qt.ItemDataRole.UserRole, p["mem"])
+            it_mem.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if p["mem"] >= 50.0:
+                it_mem.setForeground(QColor("#ff5555"))
+                it_mem.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            elif p["mem"] >= 10.0:
+                it_mem.setForeground(QColor("#ffa726"))
+            self.table.setItem(r_idx, 3, it_mem)
+
+            # VSZ (Sortable)
+            it_vsz = SortableTableWidgetItem(f"{p['vsz']:,}")
+            it_vsz.setData(Qt.ItemDataRole.UserRole, p["vsz"])
+            it_vsz.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r_idx, 4, it_vsz)
+
+            # RSS (Sortable)
+            it_rss = SortableTableWidgetItem(f"{p['rss']:,}")
+            it_rss.setData(Qt.ItemDataRole.UserRole, p["rss"])
+            it_rss.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r_idx, 5, it_rss)
+
+            # TTY
+            it_tty = QTableWidgetItem(p["tty"])
+            it_tty.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(r_idx, 6, it_tty)
+
+            # STAT
+            it_stat = QTableWidgetItem(p["stat"])
+            it_stat.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if "Z" in p["stat"]:
+                it_stat.setForeground(QColor("#ff3333"))
+                it_stat.setFont(QFont("Sans", weight=QFont.Weight.Bold))
+            self.table.setItem(r_idx, 7, it_stat)
+
+            # START
+            it_start = QTableWidgetItem(p["start"])
+            it_start.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(r_idx, 8, it_start)
+
+            # TIME
+            it_time = QTableWidgetItem(p["time"])
+            it_time.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r_idx, 9, it_time)
+
+            # Command
+            it_cmd = QTableWidgetItem(p["cmd"])
+            self.table.setItem(r_idx, 10, it_cmd)
+
+        self.table.setSortingEnabled(True)
+
+    def _get_selected_process(self) -> Optional[dict[str, Any]]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        if it:
+            return it.data(Qt.ItemDataRole.UserRole)
+        return None
+
+    def _terminate_process(self) -> None:
+        p = self._get_selected_process()
+        if not p:
+            QMessageBox.information(self, "Terminate Process", "Please select a process row first.")
+            return
+
+        pid = p["pid"]
+        cmd_short = p.get("cmd_base", str(pid))
+        if QMessageBox.question(
+            self,
+            "Confirm Terminate",
+            f"Send SIGTERM (15) to PID {pid} ({cmd_short}) to request graceful shutdown?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        if not self.run_cmd_fn:
+            QMessageBox.information(self, "Terminate Process", "Command runner is unavailable.")
+            return
+
+        cmd = process_kill_cmd(pid, 15)
+        self.status_lbl.setText(f"⏳ Sending SIGTERM to PID {pid}...")
+        self.status_lbl.setStyleSheet(f"color: {self.theme.get('accent', '#3daee9')};")
+
+        def on_done(out: str, rc: int):
+            if rc == 0:
+                self.status_lbl.setText(f"✅ SIGTERM sent to PID {pid}")
+                self.status_lbl.setStyleSheet(f"color: {self.theme.get('ok', '#0dbc79')};")
+            else:
+                self.status_lbl.setText(f"❌ Failed to signal PID {pid} (rc={rc})")
+                self.status_lbl.setStyleSheet("color: #ff5555;")
+
+        _safe_run_cmd(self.run_cmd_fn, cmd, f"SIGTERM PID {pid}", callback=on_done, refresh_after=True)
+
+    def _force_kill_process(self) -> None:
+        p = self._get_selected_process()
+        if not p:
+            QMessageBox.information(self, "Force Kill", "Please select a process row first.")
+            return
+
+        pid = p["pid"]
+        cmd_short = p.get("cmd_base", str(pid))
+        if QMessageBox.question(
+            self,
+            "Confirm Force Kill",
+            f"Send SIGKILL (9) to PID {pid} ({cmd_short})?\n\nWarning: Force kill terminates the process immediately without cleanup.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        if not self.run_cmd_fn:
+            QMessageBox.information(self, "Force Kill", "Command runner is unavailable.")
+            return
+
+        cmd = process_kill_cmd(pid, 9)
+        self.status_lbl.setText(f"⏳ Sending SIGKILL to PID {pid}...")
+        self.status_lbl.setStyleSheet("color: #ff5555;")
+
+        def on_done(out: str, rc: int):
+            if rc == 0:
+                self.status_lbl.setText(f"✅ SIGKILL sent to PID {pid}")
+                self.status_lbl.setStyleSheet(f"color: {self.theme.get('ok', '#0dbc79')};")
+            else:
+                self.status_lbl.setText(f"❌ Failed to kill PID {pid} (rc={rc})")
+                self.status_lbl.setStyleSheet("color: #ff5555;")
+
+        _safe_run_cmd(self.run_cmd_fn, cmd, f"SIGKILL PID {pid}", callback=on_done, refresh_after=True)
+
+    def _renice_process(self) -> None:
+        p = self._get_selected_process()
+        if not p:
+            QMessageBox.information(self, "Renice Process", "Please select a process row first.")
+            return
+
+        dlg = ProcessReniceDialog(p["pid"], p["user"], p.get("cmd_base", str(p["pid"])), self.theme, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_prio = dlg.get_priority()
+            cmd = process_renice_cmd(p["pid"], new_prio)
+            self.status_lbl.setText(f"⏳ Renicing PID {p['pid']} to {new_prio}...")
+            self.status_lbl.setStyleSheet(f"color: {self.theme.get('accent', '#3daee9')};")
+
+            def on_done(out: str, rc: int):
+                if rc == 0:
+                    self.status_lbl.setText(f"✅ PID {p['pid']} priority set to {new_prio}")
+                    self.status_lbl.setStyleSheet(f"color: {self.theme.get('ok', '#0dbc79')};")
+                else:
+                    self.status_lbl.setText(f"❌ Failed to renice PID {p['pid']} (rc={rc})")
+                    self.status_lbl.setStyleSheet("color: #ff5555;")
+
+            _safe_run_cmd(self.run_cmd_fn, cmd, f"Renice PID {p['pid']}", callback=on_done, refresh_after=True)
+
+    def _inspect_selected_process(self) -> None:
+        p = self._get_selected_process()
+        if not p:
+            QMessageBox.information(self, "Inspect Process", "Please select a process row first.")
+            return
+        dlg = ProcessDetailDialog(p, self.theme, run_cmd_fn=self.run_cmd_fn, parent=self)
+        dlg.exec()
+
+    def _show_context_menu(self, pos) -> None:
+        p = self._get_selected_process()
+        menu = QMenu(self)
+
+        act_term = menu.addAction("🛑 Terminate Process (SIGTERM 15)")
+        act_kill = menu.addAction("⚡ Force Kill Process (SIGKILL 9)")
+        act_renice = menu.addAction("⚖️ Change Priority (Renice...)")
+        menu.addSeparator()
+        act_inspect = menu.addAction("🔍 Inspect Process Details...")
+        menu.addSeparator()
+        act_cp_pid = menu.addAction("📋 Copy PID")
+        act_cp_cmd = menu.addAction("📋 Copy Command")
+        menu.addSeparator()
+        act_csv = menu.addAction("📊 Export Table to CSV...")
+        act_json = menu.addAction("📄 Export Table to JSON...")
+
+        chosen = menu.exec(self.table.mapToGlobal(pos))
+        if chosen == act_term and p:
+            self._terminate_process()
+        elif chosen == act_kill and p:
+            self._force_kill_process()
+        elif chosen == act_renice and p:
+            self._renice_process()
+        elif chosen == act_inspect and p:
+            self._inspect_selected_process()
+        elif chosen == act_cp_pid and p:
+            QApplication.clipboard().setText(str(p.get("pid", "")))
+        elif chosen == act_cp_cmd and p:
+            QApplication.clipboard().setText(str(p.get("cmd", "")))
+        elif chosen == act_csv:
+            ReportExporter.export_table_csv(self, self.table, "processes_report.csv", "Export Processes to CSV")
+        elif chosen == act_json:
+            ReportExporter.export_table_json(self, self.table, "processes_report.json", "Export Processes to JSON")
+
+    def _export_menu(self) -> None:
+        menu = QMenu(self)
+        csv_act = menu.addAction("📊 Export as CSV File")
+        json_act = menu.addAction("📄 Export as JSON File")
+        chosen = menu.exec(QCursor.pos())
+        if chosen == csv_act:
+            ReportExporter.export_table_csv(self, self.table, "processes_report.csv", "Export Processes to CSV")
+        elif chosen == json_act:
+            ReportExporter.export_table_json(self, self.table, "processes_report.json", "Export Processes to JSON")
+
 

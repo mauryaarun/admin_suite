@@ -182,10 +182,25 @@ class HardeningAuditorWidget(QWidget):
 
         layout.addWidget(self.table)
 
-    def refresh(self):
-        """Run SSH config audit and host probe."""
-        self.run_cmd(SecurityCommands.read_sshd_config(), self._on_sshd_result)
-        self.run_cmd(SecurityCommands.system_audit_probe(), self._on_probe_result)
+    def refresh(self, on_complete: Optional[Callable[[], None]] = None):
+        """Run SSH config audit and host probe sequentially."""
+        def _on_probe_done(stdout: str, stderr: str, code: int):
+            try:
+                self._on_probe_result(stdout, stderr, code)
+            finally:
+                if on_complete:
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
+
+        def _on_sshd_done(stdout: str, stderr: str, code: int):
+            try:
+                self._on_sshd_result(stdout, stderr, code)
+            finally:
+                self.run_cmd(SecurityCommands.system_audit_probe(), _on_probe_done)
+
+        self.run_cmd(SecurityCommands.read_sshd_config(), _on_sshd_done)
 
     run_audit = refresh
 

@@ -459,14 +459,21 @@ class VHostManagerWidget(QWidget):
 
         layout.addWidget(splitter, 1)
 
-    def refresh(self) -> None:
+    def refresh(self, on_complete: Optional[Callable[[], None]] = None) -> None:
         """Scan available and enabled sites."""
         from admin_suite.web.commands import VHOST_DISCOVERY_CMD
         self.status_message.emit("Scanning Virtual Hosts...")
 
         def on_done(out: str, rc: int):
-            self._parse_vhost_discovery(out)
-            self.status_message.emit(f"Found {len(self._vhost_entries)} Virtual Host(s)")
+            try:
+                self._parse_vhost_discovery(out)
+                self.status_message.emit(f"Found {len(self._vhost_entries)} Virtual Host(s)")
+            finally:
+                if on_complete:
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
 
         self.exec_fn(VHOST_DISCOVERY_CMD, on_done)
 

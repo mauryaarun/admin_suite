@@ -2,6 +2,11 @@
 SysAdmin dashboard command definitions.
 Optimized for performance, robustness, and modern Linux environments.
 """
+from __future__ import annotations
+
+from typing import Optional
+
+
 
 SYSADMIN_SECTIONS = [
     "Overview",
@@ -676,4 +681,56 @@ def container_exec_noninteractive_cmd(
     return " ".join(parts)
 
 
+def service_action_cmd(unit: str, action: str) -> str:
+    """Universal systemctl or service control command across systemd and SysV."""
+    import shlex
+    clean_unit = unit.strip()
+    clean_action = action.strip().lower()
+    if clean_action not in ("start", "stop", "restart", "enable", "disable", "reload", "status"):
+        clean_action = "status"
+    base_name = clean_unit[:-8] if clean_unit.endswith(".service") else clean_unit
+    return (
+        f"if which systemctl >/dev/null 2>&1; then "
+        f"  systemctl {clean_action} {shlex.quote(clean_unit)}; "
+        f"elif which service >/dev/null 2>&1; then "
+        f"  service {shlex.quote(base_name)} {clean_action}; "
+        f"else "
+        f"  echo 'No service manager found' && exit 1; "
+        f"fi"
+    )
 
+
+def service_logs_cmd(unit: str, lines: int = 100) -> str:
+    """Builds command to fetch service status and recent journal logs."""
+    import shlex
+    clean_unit = unit.strip()
+    n = int(lines)
+    base_name = clean_unit[:-8] if clean_unit.endswith(".service") else clean_unit
+    return (
+        f"echo '== STATUS: {clean_unit} =='; "
+        f"systemctl status {shlex.quote(clean_unit)} --no-pager 2>/dev/null || service {shlex.quote(base_name)} status 2>/dev/null; "
+        f"echo; echo '== RECENT LOGS =='; "
+        f"journalctl -u {shlex.quote(clean_unit)} -n {n} --no-pager 2>/dev/null || tail -n {n} /var/log/syslog 2>/dev/null || echo 'No logs available'"
+    )
+
+
+def process_kill_cmd(pid: int, sig: int = 15) -> str:
+    """Builds command to send a termination or kill signal to a process."""
+    return f"kill -{int(sig)} {int(pid)}"
+
+
+def process_renice_cmd(pid: int, priority: int = 0) -> str:
+    """Builds command to adjust process priority (nice value from -20 to 19)."""
+    p = max(-20, min(19, int(priority)))
+    return f"renice {p} -p {int(pid)}"
+
+
+def process_inspect_cmd(pid: int) -> str:
+    """Builds command to inspect process status, threads, and open file descriptors."""
+    p = int(pid)
+    return (
+        f"echo '== PROCESS STATUS =='; cat /proc/{p}/status 2>/dev/null || ps -fp {p} 2>/dev/null; "
+        f"echo; echo '== WORKING DIRECTORY =='; ls -l /proc/{p}/cwd 2>/dev/null || echo '-'; "
+        f"echo; echo '== COMMAND LINE =='; tr '\\0' ' ' < /proc/{p}/cmdline 2>/dev/null; echo; "
+        f"echo; echo '== OPEN FILES & SOCKETS =='; lsof -p {p} 2>/dev/null | head -n 30 || ls -l /proc/{p}/fd 2>/dev/null | head -n 30 || echo 'lsof not available'"
+    )

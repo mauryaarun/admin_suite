@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QColor, QFont, QPainter, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QSplitterHandle,
     QStackedWidget,
     QTableView,
     QTabWidget,
@@ -52,9 +53,13 @@ from admin_suite.sysadmin.presenter import (
     SysAdminOverviewWidget,
     SysAdminPackagesWidget,
     SysAdminPerformanceWidget,
+    SysAdminProcessesWidget,
     SysAdminSecurityWidget,
+    SysAdminServicesWidget,
     SysAdminStorageWidget,
+    SysAdminUsersWidget,
 )
+
 
 from admin_suite.security.firewall import FirewallManagerWidget
 from admin_suite.security.fail2ban import Fail2banManagerWidget
@@ -62,6 +67,8 @@ from admin_suite.security.exposure import PortExposureWidget
 from admin_suite.security.auditor import HardeningAuditorWidget
 from admin_suite.security.malware_scanner import MalwareScannerWidget
 from admin_suite.security.ssl_auditor import SSLAuditorWidget
+from admin_suite.security.file_integrity import FileIntegrityWidget
+from admin_suite.security.compliance import ComplianceAuditorWidget
 
 from admin_suite.web.vhosts import VHostManagerWidget
 from admin_suite.web.ssl_manager import SSLManagerWidget
@@ -123,6 +130,54 @@ class _ConsoleLocalExecThread(QThread):
                 self.finished_cmd.emit("", f"[Execution error] {exc}\n", 1)
 
 
+class _AdminConsoleSplitterHandle(QSplitterHandle):
+    """Vertical splitter handle with cursor, tooltip, hover highlight, and centered grip dashes."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter):
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.CursorShape.SplitVCursor)
+        self.setToolTip("Drag to resize terminal output | Double-click to collapse/expand")
+
+    def mouseDoubleClickEvent(self, event):
+        splitter = self.splitter()
+        if hasattr(splitter, "toggle_terminal_collapse"):
+            splitter.toggle_terminal_collapse()
+        super().mouseDoubleClickEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        w = self.width()
+        h = self.height()
+        cx = w // 2
+        cy = h // 2
+
+        # Draw grip dashes in center
+        is_hover = self.underMouse()
+        accent = "#3daee9" if is_hover else "#606773"
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(accent))
+
+        for offset in (-24, -16, -8, 0, 8, 16, 24):
+            painter.drawRoundedRect(cx + offset - 2, cy - 1, 5, 2, 1, 1)
+        painter.end()
+
+
+class _AdminConsoleSplitter(QSplitter):
+    """Vertical splitter supporting custom resize handle and double-click collapse toggle."""
+
+    def __init__(self, orientation: Qt.Orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setHandleWidth(8)
+        self.setChildrenCollapsible(False)
+
+    def createHandle(self) -> QSplitterHandle:
+        return _AdminConsoleSplitterHandle(self.orientation(), self)
+
+    def toggle_terminal_collapse(self):
+        parent = self.parent()
+        if parent and hasattr(parent, "_toggle_terminal_pane"):
+            parent._toggle_terminal_pane()
+
 
 class AdminConsoleTab(QWidget):
     """
@@ -152,6 +207,9 @@ class AdminConsoleTab(QWidget):
         self.auto_refresh = auto_refresh
 
         self._workers: list[QThread] = []
+        self._bg_queue: list[tuple[str, Callable[[Callable[[], None]], None]]] = []
+        self._bg_queue_running: bool = False
+        self._bg_generation: int = 0
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
@@ -220,8 +278,21 @@ class AdminConsoleTab(QWidget):
         # ------------------------------------------------------------
         # Vertical Splitter: Workspaces (Top) + Terminal Pane (Bottom)
         # ------------------------------------------------------------
-        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self._saved_terminal_height: int = 220
+        self.splitter = _AdminConsoleSplitter(Qt.Orientation.Vertical, parent=self)
         self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(8)
+        self.splitter.setStyleSheet(
+            f"QSplitter::handle:vertical {{"
+            f"  background: {self.theme.get('panel2', '#1e222b')};"
+            f"  border-top: 1px solid {self.theme.get('border', '#333')};"
+            f"  border-bottom: 1px solid {self.theme.get('border', '#333')};"
+            f"}}"
+            f"QSplitter::handle:vertical:hover {{"
+            f"  background: #2a313d;"
+            f"  border-color: {self.theme.get('accent', '#3daee9')};"
+            f"}}"
+        )
 
         # Top Container: Master Tabs
         self.master_tabs = QTabWidget()
@@ -256,10 +327,15 @@ class AdminConsoleTab(QWidget):
         self.terminal_pane = TerminalOutputPane(self.services, host_name=self.profile_name, parent=self)
         self.terminal_pane.execute_requested.connect(self._on_terminal_adhoc_cmd)
         self.terminal_pane.visibility_toggle_requested.connect(self._on_terminal_pane_collapse_toggled)
+        self.terminal_pane.resize_height_requested.connect(self._set_terminal_pane_height)
+        self.terminal_pane.toggle_maximize_requested.connect(self._toggle_terminal_pane_maximize)
         self.splitter.addWidget(self.terminal_pane)
 
-        # Splitter sizing: 70% top, 30% bottom
+        # Splitter sizing & stretch: Master tabs stretch (1), terminal pane maintains height (0)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
         self.splitter.setSizes([550, 220])
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
         main_layout.addWidget(self.splitter, 1)
 
         # Select initial category if requested
@@ -424,6 +500,9 @@ class AdminConsoleTab(QWidget):
                 pass
 
     def stop_all_workers(self) -> None:
+        self._bg_queue_running = False
+        if hasattr(self, "_bg_queue"):
+            self._bg_queue.clear()
         for w in list(self._workers):
             if hasattr(w, "stop"):
                 w.stop()
@@ -440,19 +519,68 @@ class AdminConsoleTab(QWidget):
         """Executed when user types directly in Terminal Output Pane."""
         self.execute_command(cmd, use_sudo=use_sudo)
 
+    def _on_splitter_moved(self, pos: int, index: int):
+        cur_sizes = self.splitter.sizes()
+        if len(cur_sizes) > 1 and cur_sizes[1] > 50:
+            self._saved_terminal_height = cur_sizes[1]
+            total = sum(cur_sizes) or 800
+            is_max = cur_sizes[1] >= int(total * 0.80)
+            self.terminal_pane.set_maximized(is_max)
+            if getattr(self.terminal_pane, "_is_collapsed", False):
+                self.terminal_pane.set_collapsed(False)
+
+    def _set_terminal_pane_height(self, height: int):
+        """Set terminal pane height in pixels (if positive) or percentage (if negative)."""
+        total = sum(self.splitter.sizes()) or 800
+        if height < 0:
+            target_h = int(total * (abs(height) / 100.0))
+        else:
+            target_h = height
+        target_h = max(36, min(target_h, total - 100))
+        top_h = total - target_h
+        if target_h > 50:
+            self._saved_terminal_height = target_h
+            if getattr(self.terminal_pane, "_is_collapsed", False):
+                self.terminal_pane.set_collapsed(False)
+            is_max = target_h >= int(total * 0.80)
+            self.terminal_pane.set_maximized(is_max)
+        else:
+            self.terminal_pane.set_collapsed(True)
+        self.splitter.setSizes([top_h, target_h])
+
+    def _toggle_terminal_pane_maximize(self):
+        """Toggle terminal pane between maximized (82%) and restored height."""
+        cur_sizes = self.splitter.sizes()
+        total = sum(cur_sizes) or 800
+        cur_term = cur_sizes[1]
+        max_h = int(total * 0.82)
+        if cur_term >= max_h - 30:
+            # Already maximized, restore to saved height
+            restore_h = getattr(self, "_saved_terminal_height", 220)
+            if restore_h >= max_h - 30:
+                restore_h = 220
+            self._set_terminal_pane_height(restore_h)
+            self.terminal_pane.set_maximized(False)
+        else:
+            if cur_term > 50:
+                self._saved_terminal_height = cur_term
+            self._set_terminal_pane_height(max_h)
+            self.terminal_pane.set_maximized(True)
+
     def _toggle_terminal_pane(self):
         cur_sizes = self.splitter.sizes()
-        if cur_sizes[1] < 40:
-            self.splitter.setSizes([500, 220])
+        total = sum(cur_sizes) or 800
+        if cur_sizes[1] < 50:
+            restore_h = max(140, getattr(self, "_saved_terminal_height", 220))
+            self.splitter.setSizes([total - restore_h, restore_h])
+            self.terminal_pane.set_collapsed(False)
         else:
-            self.splitter.setSizes([700, 36])
+            self._saved_terminal_height = max(100, cur_sizes[1])
+            self.splitter.setSizes([total - 36, 36])
+            self.terminal_pane.set_collapsed(True)
 
     def _on_terminal_pane_collapse_toggled(self):
-        cur_sizes = self.splitter.sizes()
-        if cur_sizes[1] > 50:
-            self.splitter.setSizes([700, 36])
-        else:
-            self.splitter.setSizes([500, 220])
+        self._toggle_terminal_pane()
 
     def _configure_sudo_credentials(self) -> None:
         user = ""
@@ -513,6 +641,9 @@ class AdminConsoleTab(QWidget):
 
         presenter_classes = {
             "Overview": SysAdminOverviewWidget,
+            "Users": SysAdminUsersWidget,
+            "Services": SysAdminServicesWidget,
+            "Processes": SysAdminProcessesWidget,
             "Storage": SysAdminStorageWidget,
             "Network": SysAdminNetworkWidget,
             "Journal": SysAdminJournalWidget,
@@ -530,12 +661,13 @@ class AdminConsoleTab(QWidget):
 
             p_cls = presenter_classes.get(sec)
             if p_cls:
-                if sec in ("Journal", "Packages", "Containers"):
+                if sec in ("Users", "Services", "Processes", "Journal", "Packages", "Containers"):
                     pres = p_cls(theme=self.theme, run_cmd_fn=self.execute_command, parent=self)
                 else:
                     pres = p_cls(theme=self.theme, parent=self)
                 self.sys_views[sec] = pres
                 sw_layout.addWidget(pres, 1)
+
             else:
                 raw_edit = QPlainTextEdit()
                 raw_edit.setReadOnly(True)
@@ -564,25 +696,42 @@ class AdminConsoleTab(QWidget):
         sec = self.sys_nav.currentItem().text() if self.sys_nav.currentItem() else "Overview"
         self._refresh_sysadmin_section(sec)
 
-    def _refresh_sysadmin_section(self, section: str):
+    def _refresh_sysadmin_section(self, section: str, on_complete: Optional[Callable[[], None]] = None):
         if not getattr(self, "auto_refresh", True):
+            if on_complete:
+                try:
+                    on_complete()
+                except Exception:
+                    pass
             return
         cmd = SYSADMIN_CMDS.get(section, "")
         if isinstance(cmd, dict):
             cmd = cmd.get("cmd", "")
         if not cmd:
+            if on_complete:
+                try:
+                    on_complete()
+                except Exception:
+                    pass
             return
 
         def on_done(stdout, stderr, rc):
-            out = stdout if rc == 0 else (stdout + "\n" + stderr)
-            pres = self.sys_views.get(section)
-            if pres and hasattr(pres, "update_data"):
-                try:
-                    pres.update_data(out)
-                except Exception as exc:
-                    self.services.emit_log("ADMIN", f"Failed updating view for {section}: {exc}", "WARNING")
-            elif section in self.sys_raw_views:
-                self.sys_raw_views[section].setPlainText(out)
+            try:
+                out = stdout if rc == 0 else (stdout + "\n" + stderr)
+                pres = self.sys_views.get(section)
+                if pres and hasattr(pres, "update_data"):
+                    try:
+                        pres.update_data(out)
+                    except Exception as exc:
+                        self.services.emit_log("ADMIN", f"Failed updating view for {section}: {exc}", "WARNING")
+                elif section in self.sys_raw_views:
+                    self.sys_raw_views[section].setPlainText(out)
+            finally:
+                if on_complete:
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
 
         self.execute_command(cmd, on_done)
 
@@ -645,6 +794,22 @@ class AdminConsoleTab(QWidget):
         )
         sec_tabs.addTab(self.ssl_tab, "📜 SSL / TLS Auditor")
 
+        # File Integrity & Whitelisting (AIDE & fapolicyd)
+        self.integrity_tab = FileIntegrityWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
+        sec_tabs.addTab(self.integrity_tab, "📁 File Integrity & Whitelisting")
+
+        # Compliance Automation & Auditing (OpenSCAP & Auditd)
+        self.compliance_tab = ComplianceAuditorWidget(
+            run_cmd=lambda *args, **kwargs: self.execute_command(*args, **kwargs),
+            theme=self.theme,
+            parent=self,
+        )
+        sec_tabs.addTab(self.compliance_tab, "⚖️ Compliance & Auditing")
+
         layout.addWidget(sec_tabs)
         return widget
 
@@ -698,7 +863,12 @@ class AdminConsoleTab(QWidget):
     # Refresh All
     # ------------------------------------------------------------
     def refresh_all(self):
-        """Perform comprehensive health & security refresh."""
+        """
+        Perform optimized health & security refresh:
+        1. Loads active sysadmin section (Overview) first and immediately renders it.
+        2. Once Overview has loaded, executes remaining status checks sequentially one by one.
+        3. File Integrity and Compliance Auditing remain on demand only.
+        """
         if self.sudo_chk.isChecked():
             sudo_pw = self._get_sudo_password()
             if sudo_pw is None and not self._is_remote():
@@ -722,50 +892,113 @@ class AdminConsoleTab(QWidget):
                     if self.profile is not None:
                         self.profile["sudo_pass"] = pw
 
-        try:
-            self._refresh_current_sysadmin_section()
-        except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing sysadmin section: {exc}", "WARNING")
+        if not getattr(self, "auto_refresh", True):
+            return
+
+        # Start with Overview (or current sysadmin section) first
+        cur_sec = (
+            self.sys_nav.currentItem().text()
+            if hasattr(self, "sys_nav") and self.sys_nav.currentItem()
+            else "Overview"
+        )
+        self._refresh_sysadmin_section(cur_sec, on_complete=self._start_sequential_background_refresh)
+
+    def _start_sequential_background_refresh(self) -> None:
+        """
+        Executes non-critical background checks sequentially one-by-one.
+        This updates data progressively without launching multiple simultaneous commands.
+        """
+        if not getattr(self, "auto_refresh", True):
+            return
+
+        self._bg_generation = getattr(self, "_bg_generation", 0) + 1
+        gen = self._bg_generation
+        self._bg_queue = [
+            ("badges", self._step_refresh_badges),
+            ("network", self._step_refresh_network),
+            ("firewall", self._step_refresh_firewall),
+            ("fail2ban", self._step_refresh_fail2ban),
+            ("exposure", self._step_refresh_exposure),
+            ("auditor", self._step_refresh_auditor),
+            ("vhosts", self._step_refresh_vhosts),
+        ]
+        self._bg_queue_running = True
+        self._run_next_bg_step(gen)
+
+    def _run_next_bg_step(self, gen: int) -> None:
+        if not getattr(self, "_bg_queue_running", False):
+            return
+        if gen != getattr(self, "_bg_generation", 0):
+            return
+        if not getattr(self, "_bg_queue", None):
+            self._bg_queue_running = False
+            return
+
+        name, step_fn = self._bg_queue.pop(0)
+
+        def step_done():
+            self._run_next_bg_step(gen)
 
         try:
-            self.firewall_tab.refresh()
+            step_fn(step_done)
         except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing firewall: {exc}", "WARNING")
+            self.services.emit_log("ADMIN", f"Background refresh step '{name}' failed: {exc}", "WARNING")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(10, step_done)
 
-        try:
-            self.fail2ban_tab.refresh()
-        except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing fail2ban: {exc}", "WARNING")
-
-        try:
-            self.exposure_tab.refresh()
-        except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing port exposure: {exc}", "WARNING")
-
-        try:
-            self.auditor_tab.refresh()
-        except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing security auditor: {exc}", "WARNING")
-
-        try:
-            self.vhosts_tab.refresh()
-        except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing virtual hosts: {exc}", "WARNING")
-
-        try:
-            self.network_widget.refresh_interfaces()
-        except Exception as exc:
-            self.services.emit_log("ADMIN", f"Error refreshing network interfaces: {exc}", "WARNING")
-
-        # Update summary badges
+    def _step_refresh_badges(self, on_complete: Callable[[], None]) -> None:
         def on_badge_check(out, err, rc):
-            fw_state = "UFW: Active" if "Status: active" in out else ("Firewalld: Active" if "running" in out else "FW: Inactive")
-            f2b_state = "F2B: Active" if "active (running)" in out else "F2B: Inactive"
-            web_state = "Nginx/Apache" if ("nginx.service" in out or "apache2.service" in out) else "Web: None"
+            try:
+                fw_state = "UFW: Active" if "Status: active" in out else ("Firewalld: Active" if "running" in out else "FW: Inactive")
+                f2b_state = "F2B: Active" if "active (running)" in out else "F2B: Inactive"
+                web_state = "Nginx/Apache" if ("nginx.service" in out or "apache2.service" in out) else "Web: None"
 
-            self.badge_fw.setText(fw_state)
-            self.badge_f2b.setText(f2b_state)
-            self.badge_web.setText(web_state)
+                self.badge_fw.setText(fw_state)
+                self.badge_f2b.setText(f2b_state)
+                self.badge_web.setText(web_state)
+            finally:
+                on_complete()
 
-        badge_cmd = "ufw status 2>/dev/null || true; firewall-cmd --state 2>/dev/null || true; systemctl status fail2ban 2>/dev/null || true; systemctl is-active nginx apache2 httpd 2>/dev/null || true"
+        badge_cmd = (
+            "ufw status 2>/dev/null || true; "
+            "firewall-cmd --state 2>/dev/null || true; "
+            "systemctl status fail2ban 2>/dev/null || true; "
+            "systemctl is-active nginx apache2 httpd 2>/dev/null || true"
+        )
         self.execute_command(badge_cmd, on_badge_check, use_sudo=False)
+
+    def _step_refresh_network(self, on_complete: Callable[[], None]) -> None:
+        if hasattr(self, "network_widget") and hasattr(self.network_widget, "refresh_interfaces"):
+            self.network_widget.refresh_interfaces(on_complete=on_complete)
+        else:
+            on_complete()
+
+    def _step_refresh_firewall(self, on_complete: Callable[[], None]) -> None:
+        if hasattr(self, "firewall_tab") and hasattr(self.firewall_tab, "refresh"):
+            self.firewall_tab.refresh(on_complete=on_complete)
+        else:
+            on_complete()
+
+    def _step_refresh_fail2ban(self, on_complete: Callable[[], None]) -> None:
+        if hasattr(self, "fail2ban_tab") and hasattr(self.fail2ban_tab, "refresh"):
+            self.fail2ban_tab.refresh(on_complete=on_complete)
+        else:
+            on_complete()
+
+    def _step_refresh_exposure(self, on_complete: Callable[[], None]) -> None:
+        if hasattr(self, "exposure_tab") and hasattr(self.exposure_tab, "refresh"):
+            self.exposure_tab.refresh(on_complete=on_complete)
+        else:
+            on_complete()
+
+    def _step_refresh_auditor(self, on_complete: Callable[[], None]) -> None:
+        if hasattr(self, "auditor_tab") and hasattr(self.auditor_tab, "refresh"):
+            self.auditor_tab.refresh(on_complete=on_complete)
+        else:
+            on_complete()
+
+    def _step_refresh_vhosts(self, on_complete: Callable[[], None]) -> None:
+        if hasattr(self, "vhosts_tab") and hasattr(self.vhosts_tab, "refresh"):
+            self.vhosts_tab.refresh(on_complete=on_complete)
+        else:
+            on_complete()

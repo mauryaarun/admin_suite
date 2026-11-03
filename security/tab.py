@@ -32,6 +32,8 @@ from admin_suite.security.exposure import PortExposureWidget
 from admin_suite.security.auditor import HardeningAuditorWidget
 from admin_suite.security.malware_scanner import MalwareScannerWidget
 from admin_suite.security.ssl_auditor import SSLAuditorWidget
+from admin_suite.security.file_integrity import FileIntegrityWidget
+from admin_suite.security.compliance import ComplianceAuditorWidget
 from admin_suite.security.commands import SecurityCommands
 from admin_suite.ui.linux_settings_dialog import LinuxSettingsDialog
 
@@ -111,11 +113,12 @@ class SecurityHubTab(QWidget):
         head_layout.addWidget(title)
 
         # Quick Status Badges
+        self.badge_distro = QLabel("OS: ?")
         self.badge_fw = QLabel("Firewall: ?")
         self.badge_f2b = QLabel("Fail2ban: ?")
         self.badge_audit = QLabel("Posture: ?")
 
-        for b in (self.badge_fw, self.badge_f2b, self.badge_audit):
+        for b in (self.badge_distro, self.badge_fw, self.badge_f2b, self.badge_audit):
             b.setStyleSheet(
                 f"border: 1px solid {theme.get('border', '#444')}; padding: 2px 6px; border-radius: 3px; font-size: 11px;"
             )
@@ -196,7 +199,23 @@ class SecurityHubTab(QWidget):
         )
         self.tabs.addTab(self.ssl_tab, "📜 SSL / TLS Auditor")
 
-        # 7. VAPT & Web Application Security Audit
+        # 7. File Integrity & Application Whitelisting (AIDE & fapolicyd)
+        self.integrity_tab = FileIntegrityWidget(
+            run_cmd=self.execute_command,
+            theme=theme,
+            parent=self,
+        )
+        self.tabs.addTab(self.integrity_tab, "📁 File Integrity & Whitelisting")
+
+        # 8. Compliance Automation & Security Auditing (OpenSCAP & Auditd)
+        self.compliance_tab = ComplianceAuditorWidget(
+            run_cmd=self.execute_command,
+            theme=theme,
+            parent=self,
+        )
+        self.tabs.addTab(self.compliance_tab, "⚖️ Compliance & Auditing")
+
+        # 9. VAPT & Web Application Security Audit
         from admin_suite.vapt.tab import VaptTab
         initial_host = ""
         if self.profile:
@@ -309,6 +328,11 @@ class SecurityHubTab(QWidget):
         self.auditor_tab.refresh()
         self.malware_tab.refresh()
         self.ssl_tab.refresh()
+        # Note: File Integrity & Whitelisting and Compliance & Auditing
+        # remain strictly on-demand to prevent heavy, automated disk/security scans.
+
+        # Update detected OS badge
+        self.execute_command(SecurityCommands.detect_os(), self._update_distro_badge)
 
         # Update top badges dynamically for both UFW and Firewalld
         check_fw_cmd = (
@@ -325,6 +349,19 @@ class SecurityHubTab(QWidget):
             "systemctl is-active fail2ban 2>/dev/null || echo 'inactive'",
             self._update_f2b_badge,
         )
+
+    def _update_distro_badge(self, stdout: str, stderr: str, code: int):
+        from admin_suite.security.commands import SecurityParsers
+        info = SecurityParsers.parse_os_release(stdout)
+        fam = info.get("family", "linux").upper()
+        pname = info.get("pretty_name") or info.get("name") or "Linux"
+        self.badge_distro.setText(f"OS: {pname} ({fam})")
+        if fam == "RHEL":
+            self.badge_distro.setStyleSheet("background: #4a1515; color: #ff8a80; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
+        elif fam == "DEBIAN":
+            self.badge_distro.setStyleSheet("background: #311b4d; color: #ea80fc; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
+        else:
+            self.badge_distro.setStyleSheet(f"background: #2a2a2a; border: 1px solid #444; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
 
     def _update_fw_badge(self, stdout: str, stderr: str, code: int):
         st = stdout.lower().strip()
