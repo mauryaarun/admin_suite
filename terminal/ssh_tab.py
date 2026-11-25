@@ -87,6 +87,7 @@ class SshTerminalTab(TerminalBaseTab):
                 services.config.get("ssh_strict_host_keys", False)
             )
 
+        self.ssh_worker: Optional[SshTerminalWorker] = None
         self.strict_host_keys = bool(strict_host_keys)
 
         super().__init__(
@@ -96,10 +97,7 @@ class SshTerminalTab(TerminalBaseTab):
             session_log_path=session_log_path,
         )
 
-        self.ssh_worker: Optional[SshTerminalWorker] = None
-
         self._network_dialogs = []
-        self.profile_data = {}
 
         self._manual_disconnect = False
         self._reconnect_attempts = 0
@@ -161,6 +159,8 @@ class SshTerminalTab(TerminalBaseTab):
             jump_creds=self.jump_creds,
             session_log_path=self.session_log_path,
             strict_host_keys=self.strict_host_keys,
+            cols=self._term_cols,
+            rows=self._term_rows,
         )
 
         self.ssh_worker.output_ready.connect(self._on_output)
@@ -203,6 +203,8 @@ class SshTerminalTab(TerminalBaseTab):
         if status == "connected":
             self.set_status("● Connected", self.theme.get("ok", "#0f0"))
             self._reconnect_attempts = 0
+            if self._term_cols > 0 and self._term_rows > 0:
+                self.handle_resize(self._term_cols, self._term_rows)
 
             self.services.notifications.push(
                 "ok",
@@ -335,17 +337,16 @@ class SshTerminalTab(TerminalBaseTab):
     # ------------------------------------------------------------------
 
     def extend_context_menu(self, menu) -> None:
-
-        self._add_menu_action(menu, "Networking Tools…", self.open_networking_tools)
+        self._add_menu_action(menu, "Networking Tools…", self.open_networking_tools, icon_name="globe")
         menu.addSeparator()
 
-        self._add_menu_action(menu, "Reconnect", self.reconnect)
-        self._add_menu_action(menu, "Disconnect", self.disconnect_ssh)
+        self._add_menu_action(menu, "Reconnect", self.reconnect, icon_name="refresh")
+        self._add_menu_action(menu, "Disconnect", self.disconnect_ssh, icon_name="stop")
 
         menu.addSeparator()
 
-        self._add_menu_action(menu, "Copy SSH URI", self.copy_ssh_uri)
-        self._add_menu_action(menu, "Copy SSH Command", self.copy_ssh_command)
+        self._add_menu_action(menu, "Copy SSH URI", self.copy_ssh_uri, icon_name="link")
+        self._add_menu_action(menu, "Copy SSH Command", self.copy_ssh_command, icon_name="copy")
 
 
 

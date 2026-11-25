@@ -39,6 +39,7 @@ class TerminalBridge(QObject):
 
     find_next = pyqtSignal(str)
     find_prev = pyqtSignal(str)
+    tab_switch_requested = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -61,6 +62,13 @@ class TerminalBridge(QObject):
         """
         if self.on_resize_cb:
             self.on_resize_cb(cols, rows)
+
+    @pyqtSlot(int)
+    def request_tab_switch(self, delta: int) -> None:
+        """
+        Called from JavaScript when user presses Shift+Left (-1) or Shift+Right (+1).
+        """
+        self.tab_switch_requested.emit(int(delta))
 
     def write_output(self, data: str) -> None:
         """

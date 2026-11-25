@@ -27,8 +27,8 @@ import os
 from collections import deque
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -39,6 +39,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.icons import get_icon, get_swatch_icon, style_icon_button
 
 from admin_suite.terminal.assets import (
     ensure_xterm_assets,
@@ -112,6 +114,8 @@ class TerminalBaseTab(QWidget):
     input_sent = pyqtSignal(str)
     terminal_ready = pyqtSignal()
     terminal_crashed = pyqtSignal()
+    tab_switch_requested = pyqtSignal(int)
+    terminal_theme_apply_all_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -132,6 +136,8 @@ class TerminalBaseTab(QWidget):
 
         self._terminal_ready = False
         self._ready_poll_attempts = 0
+        self._term_cols = 80
+        self._term_rows = 24
         self._pending_output = deque(maxlen=100_000)
         self._output_history = deque(maxlen=100_000)
         self._context_menu_extensions: list[Callable[[QMenu], None]] = []
@@ -154,7 +160,10 @@ class TerminalBaseTab(QWidget):
             self.native_view = NativeTerminalWidget(parent=self)
             self.native_view.send_input.connect(self._on_web_input)
             self.native_view.resized.connect(self._on_web_resize)
+            self.native_view.tab_switch_requested.connect(self.tab_switch_requested.emit)
+            self.native_view.context_menu_requested.connect(self._show_context_menu)
             layout.addWidget(self.native_view, 1)
+            self.apply_terminal_theme()
             self._terminal_ready = True
             return
 
@@ -172,6 +181,7 @@ class TerminalBaseTab(QWidget):
 
         self.bridge.on_input_cb = self._on_web_input
         self.bridge.on_resize_cb = self._on_web_resize
+        self.bridge.tab_switch_requested.connect(self.tab_switch_requested.emit)
 
         self.view.loadFinished.connect(self._on_page_loaded)
 
@@ -195,7 +205,7 @@ class TerminalBaseTab(QWidget):
 
     def _build_toolbar(self, parent_layout: QVBoxLayout, show_reconnect: bool) -> None:
         toolbar = QWidget()
-        toolbar.setFixedHeight(32)
+        toolbar.setFixedHeight(36)
         toolbar.setStyleSheet(
             f"background:{self.theme.get('panel', '#111')};"
             f"border-bottom:1px solid {self.theme.get('border', '#333')};"
@@ -204,81 +214,115 @@ class TerminalBaseTab(QWidget):
         toolbar.customContextMenuRequested.connect(self._show_toolbar_context_menu)
 
         h = QHBoxLayout(toolbar)
-        h.setContentsMargins(6, 2, 6, 2)
-        h.setSpacing(4)
+        h.setContentsMargins(8, 3, 8, 3)
+        h.setSpacing(6)
 
         self.toolbar = toolbar
         self.toolbar_layout = h
 
         self.status_label = QLabel("● Idle")
         self.status_label.setStyleSheet(
-            f"color:{self.theme.get('sub', '#888')};font-size:11px;"
+            f"color:{self.theme.get('sub', '#888')};font-size:11px;font-weight:600;"
         )
         h.addWidget(self.status_label)
 
-        self.latency_label = QLabel("⏱ --")
+        self.latency_label = QLabel("-- ms")
+        self.latency_label.setToolTip("Session round-trip latency")
         self.latency_label.setStyleSheet(
             f"color:{self.theme.get('sub', '#888')};font-size:11px;"
         )
         h.addWidget(self.latency_label)
 
         if self.session_log_path:
-            log_label = QLabel(f"📝 {os.path.basename(self.session_log_path)}")
-            log_label.setToolTip(self.session_log_path)
+            log_label = QLabel(os.path.basename(self.session_log_path))
+            log_label.setToolTip(f"Session log: {self.session_log_path}")
             log_label.setStyleSheet(
-                f"color:{self.theme.get('sub', '#888')};font-size:10px;"
+                f"color:{self.theme.get('sub', '#888')};font-size:10px;padding:1px 6px;"
+                f"border:1px solid {self.theme.get('border', '#333')};border-radius:3px;"
             )
             h.addWidget(log_label)
 
         h.addStretch()
 
-        button_style = (
-            "QPushButton{"
-            f"background:{self.theme.get('panel2', '#222')};"
-            "border:none;"
-            "padding:3px 8px;"
-            "border-radius:3px;"
-            "font-size:11px;"
-            "}"
-            "QPushButton:hover{"
-            f"background:{self.theme.get('hover', '#333')};"
-            "}"
-        )
+        icon_color = self.theme.get("text", "#eff0f1")
 
         if show_reconnect:
-            self.reconnect_btn = QPushButton("🔄")
-            self.reconnect_btn.setToolTip("Reconnect")
-            self.reconnect_btn.clicked.connect(self.reconnect)
-            self.reconnect_btn.setStyleSheet(button_style)
+            self.reconnect_btn = QPushButton()
             self.reconnect_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            style_icon_button(
+                self.reconnect_btn,
+                "refresh",
+                tooltip="Reconnect SSH session",
+                color=icon_color,
+                min_width=34,
+                min_height=28,
+            )
+            self.reconnect_btn.clicked.connect(self.reconnect)
             h.addWidget(self.reconnect_btn)
 
-        self.search_btn = QPushButton("🔍")
-        self.search_btn.setToolTip("Search")
-        self.search_btn.clicked.connect(self.toggle_search)
-        self.search_btn.setStyleSheet(button_style)
+        self.search_btn = QPushButton()
         self.search_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.search_btn,
+            "search",
+            tooltip="Search terminal (Ctrl+Shift+F)",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.search_btn.clicked.connect(self.toggle_search)
         h.addWidget(self.search_btn)
 
-        self.clear_btn = QPushButton("🧹")
-        self.clear_btn.setToolTip("Clear terminal")
-        self.clear_btn.clicked.connect(self.clear_terminal)
-        self.clear_btn.setStyleSheet(button_style)
+        self.clear_btn = QPushButton()
         self.clear_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.clear_btn,
+            "clear",
+            tooltip="Clear terminal (Ctrl+Shift+K)",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.clear_btn.clicked.connect(self.clear_terminal)
         h.addWidget(self.clear_btn)
 
-        self.font_inc_btn = QPushButton("A+")
-        self.font_inc_btn.setToolTip("Increase font size")
-        self.font_inc_btn.clicked.connect(lambda: self.change_font_size(1))
-        self.font_inc_btn.setStyleSheet(button_style)
+        self.theme_btn = QPushButton()
+        self.theme_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.theme_btn,
+            "palette",
+            tooltip="Terminal color theme",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.theme_btn.clicked.connect(self._show_theme_menu_from_button)
+        h.addWidget(self.theme_btn)
+
+        self.font_inc_btn = QPushButton()
         self.font_inc_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.font_inc_btn,
+            "font_plus",
+            tooltip="Increase font size (Ctrl+Shift+=)",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.font_inc_btn.clicked.connect(lambda: self.change_font_size(1))
         h.addWidget(self.font_inc_btn)
 
-        self.font_dec_btn = QPushButton("A-")
-        self.font_dec_btn.setToolTip("Decrease font size")
-        self.font_dec_btn.clicked.connect(lambda: self.change_font_size(-1))
-        self.font_dec_btn.setStyleSheet(button_style)
+        self.font_dec_btn = QPushButton()
         self.font_dec_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.font_dec_btn,
+            "font_minus",
+            tooltip="Decrease font size (Ctrl+-)",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.font_dec_btn.clicked.connect(lambda: self.change_font_size(-1))
         h.addWidget(self.font_dec_btn)
 
         parent_layout.addWidget(toolbar)
@@ -396,33 +440,127 @@ class TerminalBaseTab(QWidget):
     # Theme
     # ------------------------------------------------------------------
 
-    def apply_terminal_theme(self) -> None:
+    def apply_terminal_theme(self, theme_name: Optional[str] = None) -> None:
         """
         Apply font size and terminal theme from current configuration.
         """
-        if not WEBENGINE_AVAILABLE or not hasattr(self, "bridge"):
-            return
-
         try:
             font_size = int(self.services.config.get("terminal_font_size", 13))
         except Exception:
             font_size = 13
 
-        theme_name = self.services.config.get(
+        active_name = theme_name or self.services.config.get(
+            "terminal_theme",
+            self.theme.get("xterm", "dark"),
+        )
+        self._current_terminal_theme_name = active_name
+
+        try:
+            terminal_theme = self.services.theme.get_terminal_theme(active_name)
+        except Exception:
+            terminal_theme = {}
+
+        if hasattr(self, "native_view") and self.native_view is not None:
+            self.native_view.set_font_size(font_size)
+            self.native_view.set_theme(terminal_theme)
+
+        if WEBENGINE_AVAILABLE and hasattr(self, "bridge"):
+            if hasattr(self.bridge, "set_font_size"):
+                self.bridge.set_font_size.emit(font_size)
+
+            if hasattr(self.bridge, "set_theme"):
+                self.bridge.set_theme.emit(json.dumps(terminal_theme))
+
+        if WEBENGINE_AVAILABLE and hasattr(self, "view") and not self._view_cleaned:
+            bg_hex = terminal_theme.get("background")
+            if bg_hex:
+                try:
+                    self.view.page().setBackgroundColor(QColor(bg_hex))
+                except Exception:
+                    pass
+
+    def set_terminal_theme(self, theme_name: str, save_config: bool = True) -> None:
+        """
+        Change the terminal color scheme dynamically and optionally persist to config.
+        """
+        if save_config:
+            self.services.config.set("terminal_theme", theme_name)
+            self.services.config.save()
+
+        self.apply_terminal_theme(theme_name=theme_name)
+
+    def _apply_current_theme_to_all(self) -> None:
+        active_name = getattr(self, "_current_terminal_theme_name", None) or self.services.config.get(
+            "terminal_theme",
+            self.theme.get("xterm", "dark"),
+        )
+        self.services.config.set("terminal_theme", active_name)
+        self.services.config.save()
+        self.terminal_theme_apply_all_requested.emit(active_name)
+
+    def _populate_terminal_theme_menu(self, parent_menu: QMenu) -> QMenu:
+        """
+        Populate a Terminal Theme submenu with color swatches and checkable entries.
+        """
+        theme_menu = parent_menu.addMenu("Terminal Theme")
+        theme_menu.setIcon(
+            get_icon("palette", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        )
+
+        active_name = getattr(self, "_current_terminal_theme_name", None) or self.services.config.get(
             "terminal_theme",
             self.theme.get("xterm", "dark"),
         )
 
-        try:
-            terminal_theme = self.services.theme.get_terminal_theme(theme_name)
-        except Exception:
-            terminal_theme = {}
+        items = (
+            self.services.theme.terminal_theme_items()
+            if hasattr(self.services.theme, "terminal_theme_items")
+            else [(k, k.replace("_", " ").title()) for k in self.services.theme.terminal_themes]
+        )
 
-        if hasattr(self.bridge, "set_font_size"):
-            self.bridge.set_font_size.emit(font_size)
+        group = QActionGroup(theme_menu)
+        group.setExclusive(True)
 
-        if hasattr(self.bridge, "set_theme"):
-            self.bridge.set_theme.emit(json.dumps(terminal_theme))
+        for key, label in items:
+            t_dict = self.services.theme.get_terminal_theme(key)
+            swatch = get_swatch_icon(
+                t_dict.get("background", "#111111"),
+                t_dict.get("foreground", "#eeeeee"),
+                t_dict.get("cyan") or t_dict.get("blue") or "#3daee9",
+                size=16,
+            )
+            act = QAction(swatch, label, theme_menu)
+            act.setCheckable(True)
+            act.setChecked(key == active_name)
+            act.setData(key)
+            act.triggered.connect(
+                lambda _checked=False, name=key: self.set_terminal_theme(name, save_config=True)
+            )
+            group.addAction(act)
+            theme_menu.addAction(act)
+
+        theme_menu.addSeparator()
+        apply_all_act = self._add_menu_action(
+            theme_menu,
+            "Apply Theme to All Open Terminals",
+            self._apply_current_theme_to_all,
+            icon_name="layers",
+        )
+        apply_all_act.setToolTip("Apply the active terminal theme to all open terminal tabs")
+        return theme_menu
+
+    def _show_theme_menu_from_button(self) -> None:
+        if not hasattr(self, "theme_btn"):
+            return
+        menu = QMenu(self)
+        self._populate_terminal_theme_menu(menu)
+        # If opened directly from the palette button, lift its actions to top level for 1-click choice.
+        submenus = [a.menu() for a in menu.actions() if a.menu() is not None]
+        if submenus:
+            sub = submenus[0]
+            sub.exec(self.theme_btn.mapToGlobal(QPoint(0, self.theme_btn.height())))
+            return
+        menu.exec(self.theme_btn.mapToGlobal(QPoint(0, self.theme_btn.height())))
 
     # ------------------------------------------------------------------
     # Focus
@@ -608,6 +746,9 @@ class TerminalBaseTab(QWidget):
         self.services.config.set("terminal_font_size", default_size)
         self.services.config.save()
 
+        if hasattr(self, "native_view") and self.native_view is not None:
+            self.native_view.set_font_size(default_size)
+
         if WEBENGINE_AVAILABLE and hasattr(self, "bridge"):
             if hasattr(self.bridge, "set_font_size"):
                 self.bridge.set_font_size.emit(default_size)
@@ -628,7 +769,7 @@ class TerminalBaseTab(QWidget):
 
         self.status_label.setText(text)
         self.status_label.setStyleSheet(
-            f"color:{color};font-size:11px;"
+            f"color:{color};font-size:11px;font-weight:600;"
         )
 
     def set_latency(self, ms: int) -> None:
@@ -639,13 +780,13 @@ class TerminalBaseTab(QWidget):
             return
 
         if ms < 0:
-            self.latency_label.setText("⏱ ✕")
+            self.latency_label.setText("Offline")
             self.latency_label.setStyleSheet(
                 f"color:{self.theme.get('danger', '#f00')};font-size:11px;"
             )
             return
 
-        self.latency_label.setText(f"⏱ {ms}ms")
+        self.latency_label.setText(f"{ms} ms")
 
         if ms < 150:
             color = self.theme.get("ok", "#0f0")
@@ -671,8 +812,11 @@ class TerminalBaseTab(QWidget):
 
     def _on_web_resize(self, cols: int, rows: int) -> None:
         """
-        Resize request from xterm.js.
+        Resize request from xterm.js or native terminal.
         """
+        if cols > 0 and rows > 0:
+            self._term_cols = int(cols)
+            self._term_rows = int(rows)
         self.handle_resize(cols, rows)
 
     def handle_input(self, data: str) -> None:
@@ -726,51 +870,70 @@ class TerminalBaseTab(QWidget):
         """
         pass
 
-    def _add_menu_action(self, menu: QMenu, text: str, slot=None, enabled: bool = True):
+    def _add_menu_action(
+        self,
+        menu: QMenu,
+        text: str,
+        slot=None,
+        enabled: bool = True,
+        icon_name: Optional[str] = None,
+    ):
         action = menu.addAction(text)
+        if icon_name:
+            action.setIcon(
+                get_icon(icon_name, color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+            )
         action.setEnabled(enabled)
         if slot is not None:
             action.triggered.connect(slot)
         return action
 
-    def _show_context_menu(self, global_pos) -> None:
+    def build_context_menu(self) -> QMenu:
         """
-        Show terminal context menu.
+        Construct and return the terminal right-click context menu.
+        Works for both xterm.js WebEngine and NativeTerminalWidget backends.
         """
-        if not WEBENGINE_AVAILABLE or not hasattr(self, "bridge"):
-            return
-
         menu = QMenu(self)
+        icon_color = self.services.theme.current.get("text", "#e2e8f0")
 
-        self._add_menu_action(menu, "Copy", self.copy_selection)
-        self._add_menu_action(menu, "Paste", self.paste_clipboard)
-        self._add_menu_action(menu, "Select All", self.select_all_terminal)
+        self._add_menu_action(menu, "Copy", self.copy_selection, icon_name="copy")
+        self._add_menu_action(menu, "Paste", self.paste_clipboard, icon_name="file_text")
+        self._add_menu_action(menu, "Select All", self.select_all_terminal, icon_name="check")
+
+        menu.addSeparator()
+
+        if WEBENGINE_AVAILABLE and hasattr(self, "bridge"):
+            self._add_menu_action(menu, "Search", self.toggle_search, icon_name="search")
+        self._add_menu_action(menu, "Clear", self.clear_terminal, icon_name="clear")
+        if WEBENGINE_AVAILABLE and hasattr(self, "bridge"):
+            self._add_menu_action(menu, "Clear Scrollback", self.clear_scrollback, icon_name="trash")
+            self._add_menu_action(menu, "Reset Terminal", self.reset_terminal, icon_name="refresh")
 
         menu.addSeparator()
 
-        self._add_menu_action(menu, "Search", self.toggle_search)
-        self._add_menu_action(menu, "Clear", self.clear_terminal)
-        self._add_menu_action(menu, "Clear Scrollback", self.clear_scrollback)
-        self._add_menu_action(menu, "Reset Terminal", self.reset_terminal)
-
-        menu.addSeparator()
+        # Terminal Theme submenu right from the terminal right-click menu.
+        self._populate_terminal_theme_menu(menu)
 
         font_menu = menu.addMenu("Font Size")
+        font_menu.setIcon(get_icon("sliders", color=icon_color, size=16))
 
         self._add_menu_action(
             font_menu,
             "Increase",
             lambda: self.change_font_size(1),
+            icon_name="font_plus",
         )
         self._add_menu_action(
             font_menu,
             "Decrease",
             lambda: self.change_font_size(-1),
+            icon_name="font_minus",
         )
         self._add_menu_action(
             font_menu,
             "Reset",
             self.reset_font_size,
+            icon_name="refresh",
         )
 
         menu.addSeparator()
@@ -780,11 +943,12 @@ class TerminalBaseTab(QWidget):
             "Save Output As…",
             self.save_output_as,
             enabled=bool(self._output_history),
+            icon_name="save",
         )
 
         if self.session_log_path:
-            self._add_menu_action(menu, "Open Log Location", self.open_log_location)
-            self._add_menu_action(menu, "Copy Log Path", self.copy_log_path)
+            self._add_menu_action(menu, "Open Log Location", self.open_log_location, icon_name="folder_open")
+            self._add_menu_action(menu, "Copy Log Path", self.copy_log_path, icon_name="copy")
 
         menu.addSeparator()
 
@@ -798,6 +962,18 @@ class TerminalBaseTab(QWidget):
             except Exception:
                 pass
 
+        return menu
+
+    def _show_context_menu(self, global_pos) -> None:
+        """
+        Show terminal context menu.
+        """
+        has_native = hasattr(self, "native_view") and self.native_view is not None
+        has_web = WEBENGINE_AVAILABLE and hasattr(self, "bridge")
+        if not has_native and not has_web:
+            return
+
+        menu = self.build_context_menu()
         menu.exec(global_pos)
 
     def _show_toolbar_context_menu(self, pos) -> None:
@@ -809,18 +985,19 @@ class TerminalBaseTab(QWidget):
 
         menu = QMenu(self)
 
-        self._add_menu_action(menu, "Copy Status", self.copy_status)
-        self._add_menu_action(menu, "Copy Latency", self.copy_latency)
+        self._add_menu_action(menu, "Copy Status", self.copy_status, icon_name="info")
+        self._add_menu_action(menu, "Copy Latency", self.copy_latency, icon_name="clock")
 
         if self.session_log_path:
             menu.addSeparator()
-            self._add_menu_action(menu, "Open Log Location", self.open_log_location)
-            self._add_menu_action(menu, "Copy Log Path", self.copy_log_path)
+            self._add_menu_action(menu, "Open Log Location", self.open_log_location, icon_name="folder_open")
+            self._add_menu_action(menu, "Copy Log Path", self.copy_log_path, icon_name="copy")
 
         menu.addSeparator()
 
-        self._add_menu_action(menu, "Toggle Search", self.toggle_search)
-        self._add_menu_action(menu, "Clear Terminal", self.clear_terminal)
+        self._add_menu_action(menu, "Toggle Search", self.toggle_search, icon_name="search")
+        self._add_menu_action(menu, "Clear Terminal", self.clear_terminal, icon_name="clear")
+        self._populate_terminal_theme_menu(menu)
 
         menu.addSeparator()
 
@@ -828,13 +1005,15 @@ class TerminalBaseTab(QWidget):
             menu,
             "Increase Font",
             lambda: self.change_font_size(1),
+            icon_name="font_plus",
         )
         self._add_menu_action(
             menu,
             "Decrease Font",
             lambda: self.change_font_size(-1),
+            icon_name="font_minus",
         )
-        self._add_menu_action(menu, "Reset Font", self.reset_font_size)
+        self._add_menu_action(menu, "Reset Font", self.reset_font_size, icon_name="refresh")
 
         menu.exec(self.toolbar.mapToGlobal(pos))
 
@@ -864,6 +1043,14 @@ class TerminalBaseTab(QWidget):
         """
         Copy selected terminal text to clipboard.
         """
+        if hasattr(self, "native_view") and self.native_view is not None:
+            sel = self.native_view.get_selected_text()
+            if sel:
+                clipboard = QApplication.clipboard()
+                if clipboard is not None:
+                    clipboard.setText(sel)
+            return
+
         if not WEBENGINE_AVAILABLE or not hasattr(self, "view"):
             return
 
@@ -887,15 +1074,19 @@ class TerminalBaseTab(QWidget):
         """
         Paste clipboard text into terminal.
         """
-        if not WEBENGINE_AVAILABLE or not hasattr(self, "view"):
-            return
-
         clipboard = QApplication.clipboard()
         if clipboard is None:
             return
 
         text = clipboard.text()
         if not text:
+            return
+
+        if hasattr(self, "native_view") and self.native_view is not None:
+            self.handle_input(text)
+            return
+
+        if not WEBENGINE_AVAILABLE or not hasattr(self, "view"):
             return
 
         payload = json.dumps(text)

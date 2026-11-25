@@ -111,33 +111,100 @@ SELINUX_WEB_CMD = (
     "getsebool httpd_can_network_connect httpd_can_network_connect_db httpd_unified httpd_read_user_content httpd_enable_homedirs 2>/dev/null || echo 'none'"
 )
 
+# Command to discover installed and active web log files (Apache, httpd, Nginx)
+def discover_web_logs_cmd() -> str:
+    """Discovers existing Apache/httpd and Nginx log files ordered by modification time."""
+    return (
+        "echo '=== APACHE_HTTPD_LOGS ==='; "
+        "find /var/log/apache2 /var/log/httpd -maxdepth 2 -type f \\( -name '*log*' -o -name '*access*' -o -name '*error*' \\) 2>/dev/null -exec ls -lt {} + "
+        "| awk '{print $9\"|\"$5}' | head -25 || echo 'none'; "
+        "echo '=== NGINX_LOGS ==='; "
+        "find /var/log/nginx -maxdepth 2 -type f -name '*log*' 2>/dev/null -exec ls -lt {} + "
+        "| awk '{print $9\"|\"$5}' | head -15 || echo 'none'"
+    )
+
+
 # Command to fetch recent web server access and error logs across Debian, RHEL, and custom paths
-def web_logs_cmd(server: str = "nginx", lines: int = 150, custom_path: str = "") -> str:
+def web_logs_cmd(
+    server: str = "nginx",
+    lines: int = 250,
+    custom_path: str = "",
+    custom_access_path: str = "",
+    custom_error_path: str = "",
+    log_type: str = "both",  # "access", "error", or "both"
+) -> str:
+    """
+    Fetch recent web server access and error logs across Debian (apache2), RHEL (httpd), Nginx, Caddy,
+    or custom access/error paths.
+    """
+    safe_lines = max(10, min(10000, int(lines)))
+
+    # Both custom access and error paths provided
+    if custom_access_path and custom_error_path and log_type == "both":
+        q_acc = shlex.quote(custom_access_path.strip())
+        q_err = shlex.quote(custom_error_path.strip())
+        return (
+            f"echo '=== ACCESS_LOG ==='; tail -n {safe_lines} {q_acc} 2>/dev/null || echo 'Cannot access: {q_acc}'; "
+            f"echo '=== ERROR_LOG ==='; tail -n {safe_lines} {q_err} 2>/dev/null || echo 'Cannot access: {q_err}'"
+        )
+
+    # Custom access path only
+    if custom_access_path and (log_type in ("access", "both") or not custom_error_path):
+        q_acc = shlex.quote(custom_access_path.strip())
+        return f"echo '=== ACCESS_LOG ==='; tail -n {safe_lines} {q_acc} 2>/dev/null || echo 'Cannot access: {q_acc}'"
+
+    # Custom error path only
+    if custom_error_path and (log_type in ("error", "both") or not custom_access_path):
+        q_err = shlex.quote(custom_error_path.strip())
+        return f"echo '=== ERROR_LOG ==='; tail -n {safe_lines} {q_err} 2>/dev/null || echo 'Cannot access: {q_err}'"
+
+    # Legacy or generic single custom path
     if custom_path:
-        clean_path = shlex.quote(custom_path.strip())
-        return f"tail -n {lines} {clean_path} 2>/dev/null || echo 'Cannot access custom log file: {clean_path}'"
+        q_path = shlex.quote(custom_path.strip())
+        tag = "ERROR_LOG" if "error" in custom_path.lower() else "ACCESS_LOG"
+        return f"echo '=== {tag} ==='; tail -n {safe_lines} {q_path} 2>/dev/null || echo 'Cannot access custom log file: {q_path}'"
+
+    if server in ("apache2", "httpd", "apache"):
+        acc_cmd = (
+            f"echo '=== ACCESS_LOG ==='; "
+            f"if [ -s /var/log/apache2/access.log ]; then tail -n {safe_lines} /var/log/apache2/access.log; "
+            f"elif [ -s /var/log/apache2/other_vhosts_access.log ]; then tail -n {safe_lines} /var/log/apache2/other_vhosts_access.log; "
+            f"elif [ -s /var/log/apache2/other_vhosts_access.log.1 ]; then tail -n {safe_lines} /var/log/apache2/other_vhosts_access.log.1; "
+            f"elif [ -s /var/log/httpd/access_log ]; then tail -n {safe_lines} /var/log/httpd/access_log; "
+            f"elif [ -s /var/log/httpd/access.log ]; then tail -n {safe_lines} /var/log/httpd/access.log; "
+            f"elif [ -f /var/log/apache2/access.log ]; then tail -n {safe_lines} /var/log/apache2/access.log; "
+            f"elif [ -f /var/log/httpd/access_log ]; then tail -n {safe_lines} /var/log/httpd/access_log; "
+            f"else echo 'no access log found'; fi"
+        )
+        err_cmd = (
+            f"echo '=== ERROR_LOG ==='; "
+            f"if [ -s /var/log/apache2/error.log ]; then tail -n {safe_lines} /var/log/apache2/error.log; "
+            f"elif [ -s /var/log/apache2/error.log.1 ]; then tail -n {safe_lines} /var/log/apache2/error.log.1; "
+            f"elif [ -s /var/log/httpd/error_log ]; then tail -n {safe_lines} /var/log/httpd/error_log; "
+            f"elif [ -s /var/log/httpd/error.log ]; then tail -n {safe_lines} /var/log/httpd/error.log; "
+            f"elif [ -f /var/log/apache2/error.log ]; then tail -n {safe_lines} /var/log/apache2/error.log; "
+            f"elif [ -f /var/log/httpd/error_log ]; then tail -n {safe_lines} /var/log/httpd/error_log; "
+            f"else echo 'no error log found'; fi"
+        )
+        if log_type == "access":
+            return acc_cmd
+        elif log_type == "error":
+            return err_cmd
+        return f"{acc_cmd}; {err_cmd}"
 
     if server == "nginx":
-        return (
-            f"echo '=== ACCESS_LOG ==='; tail -n {lines} /var/log/nginx/access.log 2>/dev/null || echo 'no access.log'; "
-            f"echo '=== ERROR_LOG ==='; tail -n {lines} /var/log/nginx/error.log 2>/dev/null || echo 'no error.log'"
-        )
-    elif server in ("apache2", "httpd"):
-        return (
-            f"echo '=== ACCESS_LOG ==='; "
-            f"tail -n {lines} /var/log/apache2/access.log 2>/dev/null "
-            f"|| tail -n {lines} /var/log/httpd/access_log 2>/dev/null "
-            f"|| tail -n {lines} /var/log/httpd/access.log 2>/dev/null "
-            f"|| echo 'no access log found'; "
-            f"echo '=== ERROR_LOG ==='; "
-            f"tail -n {lines} /var/log/apache2/error.log 2>/dev/null "
-            f"|| tail -n {lines} /var/log/httpd/error_log 2>/dev/null "
-            f"|| tail -n {lines} /var/log/httpd/error.log 2>/dev/null "
-            f"|| echo 'no error log found'"
-        )
-    elif server == "caddy":
-        return f"echo '=== CADDY_LOG ==='; journalctl -u caddy -n {lines} --no-pager 2>/dev/null || tail -n {lines} /var/log/caddy/access.log 2>/dev/null || echo 'no caddy log'"
-    return f"tail -n {lines} /var/log/syslog 2>/dev/null || tail -n {lines} /var/log/messages 2>/dev/null || echo 'no log'"
+        acc_cmd = f"echo '=== ACCESS_LOG ==='; tail -n {safe_lines} /var/log/nginx/access.log 2>/dev/null || echo 'no access.log'"
+        err_cmd = f"echo '=== ERROR_LOG ==='; tail -n {safe_lines} /var/log/nginx/error.log 2>/dev/null || echo 'no error.log'"
+        if log_type == "access":
+            return acc_cmd
+        elif log_type == "error":
+            return err_cmd
+        return f"{acc_cmd}; {err_cmd}"
+
+    if server == "caddy":
+        return f"echo '=== CADDY_LOG ==='; journalctl -u caddy -n {safe_lines} --no-pager 2>/dev/null || tail -n {safe_lines} /var/log/caddy/access.log 2>/dev/null || echo 'no caddy log'"
+
+    return f"tail -n {safe_lines} /var/log/syslog 2>/dev/null || tail -n {safe_lines} /var/log/messages 2>/dev/null || echo 'no log'"
 
 
 # Apache VirtualHost Generator

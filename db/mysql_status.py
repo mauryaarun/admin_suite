@@ -5,7 +5,7 @@ MySQL server status and information tab.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
@@ -20,8 +20,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
-
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.db.worker import DbWorker
 
 
@@ -50,7 +50,7 @@ class MySQLStatusTab(QWidget):
 
         bar = QHBoxLayout()
 
-        title = QLabel("📈 MySQL Server Status & Information")
+        title = QLabel("MySQL Server Status & Information")
         title.setStyleSheet(
             f"color:{theme['accent']};font-weight:bold;font-size:15px;padding:4px;"
         )
@@ -58,7 +58,8 @@ class MySQLStatusTab(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(f"color:{theme['sub']};")
 
-        self.refresh_btn = QPushButton("🔄 Refresh")
+        self.refresh_btn = QPushButton()
+        style_icon_button(self.refresh_btn, "refresh", "Refresh MySQL status metrics", icon_only=True)
         self.refresh_btn.clicked.connect(self.refresh)
 
         bar.addWidget(title)
@@ -85,7 +86,7 @@ class MySQLStatusTab(QWidget):
             QHeaderView.ResizeMode.Stretch,
         )
 
-        self.tabs.addTab(self.overview_tree, "🧭 Overview")
+        self.tabs.addTab(self.overview_tree, get_icon("info", size=16), "Overview")
 
         # Global status.
         self.status_table = QTableView()
@@ -94,7 +95,7 @@ class MySQLStatusTab(QWidget):
         self.status_model = QStandardItemModel()
         self.status_table.setModel(self.status_model)
 
-        self.tabs.addTab(self.status_table, "📊 Global Status")
+        self.tabs.addTab(self.status_table, get_icon("activity", size=16), "Global Status")
 
         # Processlist.
         self.process_table = QTableView()
@@ -103,7 +104,7 @@ class MySQLStatusTab(QWidget):
         self.process_model = QStandardItemModel()
         self.process_table.setModel(self.process_model)
 
-        self.tabs.addTab(self.process_table, "🧵 Processlist")
+        self.tabs.addTab(self.process_table, get_icon("list", size=16), "Processlist")
 
         # Variables.
         self.variables_table = QTableView()
@@ -112,21 +113,21 @@ class MySQLStatusTab(QWidget):
         self.variables_model = QStandardItemModel()
         self.variables_table.setModel(self.variables_model)
 
-        self.tabs.addTab(self.variables_table, "⚙️ Variables")
+        self.tabs.addTab(self.variables_table, get_icon("settings", size=16), "Variables")
 
         # InnoDB.
         self.innodb_text = QPlainTextEdit()
         self.innodb_text.setReadOnly(True)
-        self.innodb_text.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.innodb_text.setFont(mono_font(10))
 
-        self.tabs.addTab(self.innodb_text, "🗄 InnoDB")
+        self.tabs.addTab(self.innodb_text, get_icon("database", size=16), "InnoDB")
 
         # Replication.
         self.repl_text = QPlainTextEdit()
         self.repl_text.setReadOnly(True)
-        self.repl_text.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.repl_text.setFont(mono_font(10))
 
-        self.tabs.addTab(self.repl_text, "🔁 Replication")
+        self.tabs.addTab(self.repl_text, get_icon("sync", size=16), "Replication")
 
         layout.addWidget(self.tabs, 1)
 

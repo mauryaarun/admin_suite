@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -26,6 +27,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.fonts import ui_font
+from admin_suite.core.icons import get_icon, style_icon_button
 
 
 class DetachedTabWindow(QMainWindow):
@@ -44,15 +48,19 @@ class DetachedTabWindow(QMainWindow):
         original_index: int,
         theme: dict[str, str],
         parent: Optional[QWidget] = None,
+        icon: Optional[QIcon] = None,
     ):
         super().__init__(parent)
         self.detached_widget = widget
         self.original_title = title
         self.original_tabs = original_tabs
         self.original_index = original_index
+        self.original_icon = icon if icon is not None else QIcon()
         self.theme = theme
 
         self.setWindowTitle(f"Admin Suite — {title}")
+        if not self.original_icon.isNull():
+            self.setWindowIcon(self.original_icon)
         self.resize(1000, 700)
 
         win_bg = theme.get("win", "#1b1e23")
@@ -76,15 +84,26 @@ class DetachedTabWindow(QMainWindow):
         )
         tb_layout = QHBoxLayout(top_bar)
         tb_layout.setContentsMargins(8, 2, 8, 2)
+        tb_layout.setSpacing(6)
 
-        title_lbl = QLabel(f"🗔 <b>{title}</b> (Detached Window)")
-        title_lbl.setStyleSheet(f"color: {accent}; font-size: 12px;")
+        icon_lbl = QLabel()
+        icon_src = self.original_icon if not self.original_icon.isNull() else get_icon("detach", color=accent, size=18)
+        icon_lbl.setPixmap(icon_src.pixmap(18, 18))
+        tb_layout.addWidget(icon_lbl)
+
+        title_lbl = QLabel(f"<b>{title}</b> — Detached Window")
+        title_lbl.setFont(ui_font(10))
+        title_lbl.setStyleSheet(f"color: {accent};")
         tb_layout.addWidget(title_lbl)
         tb_layout.addStretch()
 
-        redock_btn = QPushButton("📌 Re-dock to Main Window")
-        redock_btn.setStyleSheet(
-            f"background: {accent}; color: white; border-radius: 3px; padding: 3px 10px; font-weight: bold; font-size: 11px;"
+        redock_btn = QPushButton()
+        style_icon_button(
+            redock_btn,
+            "pin",
+            "Re-dock to Main Window",
+            icon_only=True,
+            color=accent,
         )
         redock_btn.clicked.connect(self.request_redock)
         tb_layout.addWidget(redock_btn)
@@ -102,7 +121,10 @@ class DetachedTabWindow(QMainWindow):
         if self.detached_widget is not None and self.original_tabs is not None:
             # Re-dock back
             idx = min(self.original_index, self.original_tabs.count())
-            self.original_tabs.insertTab(idx, self.detached_widget, self.original_title)
+            if not self.original_icon.isNull():
+                self.original_tabs.insertTab(idx, self.detached_widget, self.original_icon, self.original_title)
+            else:
+                self.original_tabs.insertTab(idx, self.detached_widget, self.original_title)
             self.original_tabs.setCurrentWidget(self.detached_widget)
             self.detached_widget = None
         event.accept()
@@ -135,6 +157,7 @@ class WorkspaceManager:
             return None
 
         title = tabs.tabText(index)
+        icon = tabs.tabIcon(index)
         tabs.removeTab(index)
 
         theme = getattr(self.main_window.services, "theme", None)
@@ -147,6 +170,7 @@ class WorkspaceManager:
             original_index=index,
             theme=theme_dict,
             parent=None,
+            icon=icon,
         )
         win.redock_requested.connect(self._on_redock)
         self.detached_windows.append(win)

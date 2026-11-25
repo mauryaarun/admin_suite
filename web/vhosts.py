@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -33,8 +34,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from admin_suite.ssh.remote_exec import RemoteExecThread
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
+from admin_suite.ssh.remote_exec import RemoteExecThread
 
 
 def generate_nginx_vhost(
@@ -251,7 +253,7 @@ class NewVHostDialog(QDialog):
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         self.preview_edit = QPlainTextEdit()
-        self.preview_edit.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.preview_edit.setFont(mono_font(10))
         preview_layout.addWidget(self.preview_edit)
         self.tabs.addTab(preview_widget, "📄 Generated Config Preview")
 
@@ -450,7 +452,7 @@ class VHostManagerWidget(QWidget):
         editor_layout.addLayout(editor_head)
 
         self.config_editor = QPlainTextEdit()
-        self.config_editor.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.config_editor.setFont(mono_font(10))
         ReportExporter.attach_export_context_menu(self.config_editor)
         editor_layout.addWidget(self.config_editor, 1)
 

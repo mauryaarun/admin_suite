@@ -390,3 +390,5 @@ def test_sysadmin_tab_formatted_views(qapp, services):
 
     tab._render("Processes", SAMPLE_PROCESSES_RAW, 0)
     assert tab.presenter_views["Processes"].table.rowCount() == 4
+    tab.stop_all_workers()
+    tab.close()

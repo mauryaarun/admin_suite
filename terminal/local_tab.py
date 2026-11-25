@@ -33,6 +33,8 @@ class LocalTerminalTab(TerminalBaseTab):
         name: str = "Local",
     ):
         self.command = command
+        self.proc_worker: Optional[LocalTerminalWorker] = None
+        self._manual_stop = False
 
         super().__init__(
             services,
@@ -40,26 +42,18 @@ class LocalTerminalTab(TerminalBaseTab):
             show_reconnect=False,
         )
 
-        self.proc_worker: Optional[LocalTerminalWorker] = None
-        self._manual_stop = False
+        from admin_suite.core.icons import style_icon_button
 
-        button_style = (
-            "QPushButton{"
-            f"background:{self.theme.get('panel2', '#222')};"
-            "border:none;"
-            "padding:3px 8px;"
-            "border-radius:3px;"
-            "font-size:11px;"
-            "}"
-            "QPushButton:hover{"
-            f"background:{self.theme.get('hover', '#333')};"
-            "}"
-        )
-
-        self.kill_btn = QPushButton("⛔ Kill")
-        self.kill_btn.setToolTip("Kill local process")
-        self.kill_btn.setStyleSheet(button_style)
+        self.kill_btn = QPushButton()
         self.kill_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.kill_btn,
+            "kill",
+            tooltip="Kill local process",
+            color=self.theme.get("danger", "#ff5555"),
+            min_width=34,
+            min_height=28,
+        )
         self.kill_btn.clicked.connect(self.confirm_kill_process)
 
         if hasattr(self, "toolbar_layout"):
@@ -93,6 +87,8 @@ class LocalTerminalTab(TerminalBaseTab):
         self.proc_worker = LocalTerminalWorker(
             command=self.command,
             name=self.name,
+            cols=self._term_cols,
+            rows=self._term_rows,
         )
 
         self.proc_worker.output_ready.connect(self._on_output)

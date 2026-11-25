@@ -10,7 +10,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,6 +36,8 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font, ui_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.vapt.engine import VaptEngine
 from admin_suite.vapt.reporter import VaptReporter
 
@@ -114,15 +116,15 @@ class VaptTab(QWidget):
         self.tab_exposure = self._build_exposure_tab(theme)
         self.tab_report = self._build_report_tab(theme)
 
-        self.audit_tabs.addTab(self.tab_summary, "📊 Executive Summary")
-        self.audit_tabs.addTab(self.tab_headers, "🛡️ Security Headers")
-        self.audit_tabs.addTab(self.tab_tech, "💻 Tech Stack")
-        self.audit_tabs.addTab(self.tab_whois, "📋 WHOIS")
-        self.audit_tabs.addTab(self.tab_dns, "🌐 DNS & Email Security")
-        self.audit_tabs.addTab(self.tab_ssl, "🔒 SSL / TLS")
-        self.audit_tabs.addTab(self.tab_subdomains, "🔎 Subdomains")
-        self.audit_tabs.addTab(self.tab_exposure, "⚠️ Web Exposure & Cookies")
-        self.audit_tabs.addTab(self.tab_report, "📄 Full Report & Export")
+        self.audit_tabs.addTab(self.tab_summary, get_icon("activity", size=16), "Executive Summary")
+        self.audit_tabs.addTab(self.tab_headers, get_icon("shield", size=16), "Security Headers")
+        self.audit_tabs.addTab(self.tab_tech, get_icon("code", size=16), "Tech Stack")
+        self.audit_tabs.addTab(self.tab_whois, get_icon("file_text", size=16), "WHOIS")
+        self.audit_tabs.addTab(self.tab_dns, get_icon("globe", size=16), "DNS & Email Security")
+        self.audit_tabs.addTab(self.tab_ssl, get_icon("lock", size=16), "SSL / TLS")
+        self.audit_tabs.addTab(self.tab_subdomains, get_icon("search", size=16), "Subdomains")
+        self.audit_tabs.addTab(self.tab_exposure, get_icon("alert", size=16), "Web Exposure & Cookies")
+        self.audit_tabs.addTab(self.tab_report, get_icon("export", size=16), "Full Report & Export")
 
         main_layout.addWidget(self.audit_tabs, 1)
 
@@ -140,8 +142,8 @@ class VaptTab(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
 
-        icon_lbl = QLabel("🛡️")
-        icon_lbl.setFont(QFont("Segoe UI", 14))
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(get_icon("shield", color=theme.get("accent", "#3daee9"), size=20).pixmap(20, 20))
         layout.addWidget(icon_lbl)
 
         target_lbl = QLabel("Target URL / Domain:")
@@ -158,20 +160,26 @@ class VaptTab(QWidget):
         self.profile_combo.setToolTip("Select scan profile depth")
         layout.addWidget(self.profile_combo)
 
-        self.btn_start = QPushButton("🚀 Run Audit")
-        self.btn_start.setStyleSheet(
-            f"background: {theme.get('accent', '#3daee9')}; color: white; font-weight: bold; padding: 6px 14px;"
+        self.btn_start = QPushButton()
+        style_icon_button(
+            self.btn_start,
+            "play",
+            "Run VAPT Security Audit",
+            icon_only=True,
+            color="#22c55e",
         )
         self.btn_start.clicked.connect(self.start_audit)
         layout.addWidget(self.btn_start)
 
-        self.btn_cancel = QPushButton("🛑 Stop")
+        self.btn_cancel = QPushButton()
+        style_icon_button(self.btn_cancel, "stop", "Stop active audit", icon_only=True, color="#ef4444")
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self.cancel_audit)
         layout.addWidget(self.btn_cancel)
 
         # Export Report Button
-        self.btn_export_quick = QPushButton("📤 Export Report")
+        self.btn_export_quick = QPushButton()
+        style_icon_button(self.btn_export_quick, "export", "Export HTML audit report", icon_only=True)
         self.btn_export_quick.setEnabled(False)
         self.btn_export_quick.clicked.connect(self.export_html_report)
         layout.addWidget(self.btn_export_quick)
@@ -212,11 +220,11 @@ class VaptTab(QWidget):
         # Grade Badge
         self.kpi_grade = self._create_kpi_card("Overall Grade", "-", "#888", font_size=24)
         self.kpi_score = self._create_kpi_card("Security Score", "0 / 100", theme.get("fg", "#eee"))
-        self.kpi_crit = self._create_kpi_card("🔴 Critical Issues", "0", "#eb4444")
-        self.kpi_high = self._create_kpi_card("🟠 High Issues", "0", "#ff9800")
-        self.kpi_warn = self._create_kpi_card("🟡 Warnings", "0", "#ffca28")
-        self.kpi_subs = self._create_kpi_card("🟢 Subdomains", "0", "#44eb74")
-        self.kpi_time = self._create_kpi_card("⏱ Scan Time", "0s", theme.get("sub", "#aaa"))
+        self.kpi_crit = self._create_kpi_card("Critical Issues", "0", "#eb4444")
+        self.kpi_high = self._create_kpi_card("High Issues", "0", "#ff9800")
+        self.kpi_warn = self._create_kpi_card("Warnings", "0", "#ffca28")
+        self.kpi_subs = self._create_kpi_card("Subdomains", "0", "#44eb74")
+        self.kpi_time = self._create_kpi_card("Scan Time", "0s", theme.get("sub", "#aaa"))
 
         layout.addWidget(self.kpi_grade)
         layout.addWidget(self.kpi_score)
@@ -239,7 +247,7 @@ class VaptTab(QWidget):
         lay.setSpacing(1)
 
         val_lbl = QLabel(val)
-        val_lbl.setFont(QFont("Segoe UI, Inter", font_size, QFont.Weight.Bold))
+        val_lbl.setFont(ui_font(font_size, bold=True))
         val_lbl.setStyleSheet(f"color: {val_color};")
         val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -315,7 +323,7 @@ class VaptTab(QWidget):
         self.headers_config_text = QPlainTextEdit()
         self.headers_config_text.setReadOnly(True)
         self.headers_config_text.setPlaceholderText("Hardening configuration will be generated after audit.")
-        self.headers_config_text.setFont(QFont("Monospace", 9))
+        self.headers_config_text.setFont(mono_font(9))
         config_lay.addWidget(self.headers_config_text)
         splitter.addWidget(config_box)
 
@@ -380,7 +388,7 @@ class VaptTab(QWidget):
 
         self.whois_raw_text = QPlainTextEdit()
         self.whois_raw_text.setReadOnly(True)
-        self.whois_raw_text.setFont(QFont("Monospace", 9))
+        self.whois_raw_text.setFont(mono_font(9))
         right_lay.addWidget(self.whois_raw_text)
         splitter.addWidget(right_frame)
 
@@ -569,7 +577,7 @@ class VaptTab(QWidget):
 
         self.report_preview = QTextEdit()
         self.report_preview.setReadOnly(True)
-        self.report_preview.setFont(QFont("Monospace", 9))
+        self.report_preview.setFont(mono_font(9))
         self.report_preview.setPlaceholderText("Audit report preview will be rendered here upon completion.")
         lay.addWidget(self.report_preview)
 
@@ -699,11 +707,11 @@ class VaptTab(QWidget):
             sev_item = QTableWidgetItem(f" {sev} ")
             sev_item.setBackground(sev_colors.get(sev, QColor("#888")))
             sev_item.setForeground(QColor("#ffffff"))
-            sev_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            sev_item.setFont(ui_font(9, bold=True))
             sev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             issue_item = QTableWidgetItem(f.get("issue", ""))
-            issue_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            issue_item.setFont(ui_font(9, bold=True))
 
             detail_item = QTableWidgetItem(f.get("detail", ""))
             remed_item = QTableWidgetItem(f.get("remediation", ""))
@@ -730,7 +738,7 @@ class VaptTab(QWidget):
 
         for row, item in enumerate(items):
             h_item = QTableWidgetItem(item.get("header", ""))
-            h_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            h_item.setFont(ui_font(9, bold=True))
 
             status = item.get("status", "FAIL")
             st_item = QTableWidgetItem(f" {status} ")
@@ -739,7 +747,7 @@ class VaptTab(QWidget):
             st_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             val_item = QTableWidgetItem(item.get("value", ""))
-            val_item.setFont(QFont("Monospace", 9))
+            val_item.setFont(mono_font(9))
 
             score_str = f"{item.get('earned', 0)} / {item.get('weight', 0)}"
             score_item = QTableWidgetItem(score_str)
@@ -763,11 +771,11 @@ class VaptTab(QWidget):
         for row, t in enumerate(techs):
             icon = t.get("icon", "📦")
             name_item = QTableWidgetItem(f"{icon}  {t.get('name', '')}")
-            name_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            name_item.setFont(ui_font(9, bold=True))
 
             cat_item = QTableWidgetItem(t.get("category", ""))
             ver_item = QTableWidgetItem(t.get("version", "-") or "-")
-            ver_item.setFont(QFont("Monospace", 9))
+            ver_item.setFont(mono_font(9))
             conf_item = QTableWidgetItem(t.get("confidence", "High"))
 
             self.tech_table.setItem(row, 0, name_item)
@@ -798,7 +806,7 @@ class VaptTab(QWidget):
         self.whois_table.setRowCount(len(props))
         for row, (k, v) in enumerate(props):
             k_item = QTableWidgetItem(k)
-            k_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            k_item.setFont(ui_font(9, bold=True))
             v_item = QTableWidgetItem(str(v or "Unknown / Redacted"))
             self.whois_table.setItem(row, 0, k_item)
             self.whois_table.setItem(row, 1, v_item)
@@ -817,7 +825,7 @@ class VaptTab(QWidget):
         self.email_sec_table.setRowCount(len(email_items))
         for row, (proto, status, policy, raw) in enumerate(email_items):
             p_item = QTableWidgetItem(proto)
-            p_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            p_item.setFont(ui_font(9, bold=True))
 
             st_item = QTableWidgetItem(status)
             if "Missing" in status:
@@ -829,7 +837,7 @@ class VaptTab(QWidget):
 
             pol_item = QTableWidgetItem(policy)
             raw_item = QTableWidgetItem(raw)
-            raw_item.setFont(QFont("Monospace", 9))
+            raw_item.setFont(mono_font(9))
 
             self.email_sec_table.setItem(row, 0, p_item)
             self.email_sec_table.setItem(row, 1, st_item)
@@ -846,10 +854,10 @@ class VaptTab(QWidget):
         for rtype, rvalues in records.items():
             for val in rvalues:
                 t_item = QTableWidgetItem(rtype)
-                t_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                t_item.setFont(ui_font(9, bold=True))
                 d_item = QTableWidgetItem(domain)
                 v_item = QTableWidgetItem(val)
-                v_item.setFont(QFont("Monospace", 9))
+                v_item.setFont(mono_font(9))
 
                 self.dns_table.setItem(r_idx, 0, t_item)
                 self.dns_table.setItem(r_idx, 1, d_item)
@@ -877,7 +885,7 @@ class VaptTab(QWidget):
         self.ssl_table.setRowCount(len(props))
         for row, (k, v) in enumerate(props):
             k_item = QTableWidgetItem(k)
-            k_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            k_item.setFont(ui_font(9, bold=True))
             v_item = QTableWidgetItem(str(v))
             if k == "Days Until Expiry" and ssl_info.get("is_expiring_soon"):
                 v_item.setForeground(QColor("#ff9800"))
@@ -894,10 +902,10 @@ class VaptTab(QWidget):
 
         for row, s in enumerate(subdomains):
             sub_item = QTableWidgetItem(s.get("subdomain", ""))
-            sub_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            sub_item.setFont(ui_font(9, bold=True))
 
             ip_item = QTableWidgetItem(s.get("ip", "-"))
-            ip_item.setFont(QFont("Monospace", 9))
+            ip_item.setFont(mono_font(9))
 
             st_item = QTableWidgetItem(str(s.get("status_code", "-")))
             st_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -930,7 +938,7 @@ class VaptTab(QWidget):
 
         for row, c in enumerate(cookie_list):
             name_item = QTableWidgetItem(c.get("name", ""))
-            name_item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            name_item.setFont(ui_font(9, bold=True))
 
             sec_item = QTableWidgetItem("✓ Yes" if c.get("has_secure") else "✗ Missing")
             sec_item.setForeground(QColor("#00c853") if c.get("has_secure") else QColor("#e53935"))
@@ -958,7 +966,7 @@ class VaptTab(QWidget):
 
         for row, item in enumerate(sensitive_items):
             p_item = QTableWidgetItem(item.get("path", ""))
-            p_item.setFont(QFont("Monospace", 9, QFont.Weight.Bold))
+            p_item.setFont(mono_font(9, bold=True))
 
             st_item = QTableWidgetItem(item.get("status", ""))
             sev = item.get("severity", "NONE")

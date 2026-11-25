@@ -6,8 +6,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 
-from PyQt6.QtGui import (
-    QColor,QFont,)
+from PyQt6.QtGui import QColor
 
 from PyQt6.QtWidgets import (
     QDialog,
@@ -19,10 +18,9 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QHeaderView,
-    
-    
 )
 
+from admin_suite.core.fonts import mono_font
 from admin_suite.db.quoting import qident
 
 
@@ -126,7 +124,7 @@ class CreateTableDialog(QDialog):
             "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
         )
 
-        self.cols_edit.setFont(QFont("JetBrains Mono, Consolas", 11))
+        self.cols_edit.setFont(mono_font(11))
 
         layout.addWidget(self.cols_edit, 1)
 

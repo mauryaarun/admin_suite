@@ -27,7 +27,7 @@ from PyQt6.QtCore import (
     Qt,
     pyqtSignal,
 )
-from PyQt6.QtGui import QAction, QColor, QFont, QKeySequence
+from PyQt6.QtGui import QAction, QColor, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -43,15 +43,19 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
+    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.db.models import SqlResultModel
 
 
@@ -220,16 +224,18 @@ class CellInspectorDialog(QDialog):
         top_bar.addWidget(type_lbl)
         top_bar.addStretch()
 
-        btn_format_json = QPushButton("⚡ Format JSON")
+        btn_format_json = QPushButton()
+        style_icon_button(btn_format_json, "code", "Pretty-format JSON content", size=20, icon_only=True)
         top_bar.addWidget(btn_format_json)
 
-        btn_copy = QPushButton("📋 Copy Value")
+        btn_copy = QPushButton()
+        style_icon_button(btn_copy, "copy", "Copy cell value to clipboard", size=20, icon_only=True)
         top_bar.addWidget(btn_copy)
         layout.addLayout(top_bar)
 
         self.text_edit = QPlainTextEdit()
         self.text_edit.setReadOnly(True)
-        self.text_edit.setFont(QFont("JetBrains Mono, Consolas, monospace", 10))
+        self.text_edit.setFont(mono_font(10))
         self.text_edit.setPlainText("NULL" if is_null else raw_str)
         layout.addWidget(self.text_edit, 1)
 
@@ -358,41 +364,56 @@ class EnhancedTableDataWidget(QWidget):
         top_bar.setSpacing(6)
 
         self.global_search_edit = QLineEdit()
-        self.global_search_edit.setPlaceholderText("🔍 Quick search across all fields...")
+        self.global_search_edit.setPlaceholderText("Quick search across all fields...")
+        self.global_search_edit.setClearButtonEnabled(True)
         self.global_search_edit.textChanged.connect(self._on_global_search_changed)
         top_bar.addWidget(self.global_search_edit, 1)
 
-        self.btn_toggle_filters = QPushButton("🔍 Field Filters Row")
+        self.btn_toggle_filters = QPushButton()
+        style_icon_button(self.btn_toggle_filters, "filter", "Toggle per-column filter row", size=20, icon_only=True)
         self.btn_toggle_filters.setCheckable(True)
         self.btn_toggle_filters.setChecked(True)
         self.btn_toggle_filters.clicked.connect(self._toggle_filter_row)
         top_bar.addWidget(self.btn_toggle_filters)
 
-        self.btn_clear_filters = QPushButton("❌ Clear Filters")
+        self.btn_clear_filters = QPushButton()
+        style_icon_button(self.btn_clear_filters, "clear", "Clear all filters", size=20, icon_only=True)
         self.btn_clear_filters.clicked.connect(self.clear_all_filters)
         top_bar.addWidget(self.btn_clear_filters)
 
-        self.btn_push_where = QPushButton("⚡ Push to SQL WHERE")
-        self.btn_push_where.setToolTip("Compile active field filters into a SQL WHERE clause")
+        self.btn_push_where = QPushButton()
+        style_icon_button(
+            self.btn_push_where,
+            "bolt",
+            "Push to SQL WHERE — compile active field filters into a SQL WHERE clause",
+            size=20,
+            icon_only=True,
+        )
         self.btn_push_where.clicked.connect(self._push_filters_to_sql_where)
         top_bar.addWidget(self.btn_push_where)
 
         # Inline editing action buttons
-        self.btn_edit_mode = QPushButton("✏️ Edit Grid")
+        self.btn_edit_mode = QPushButton()
+        style_icon_button(
+            self.btn_edit_mode,
+            "edit",
+            "Edit Grid — enable in-place cell editing with dirty-state tracking",
+            size=20,
+            icon_only=True,
+        )
         self.btn_edit_mode.setCheckable(True)
-        self.btn_edit_mode.setToolTip("Enable in-place cell editing with dirty-state tracking")
         self.btn_edit_mode.toggled.connect(self._toggle_edit_mode)
         top_bar.addWidget(self.btn_edit_mode)
 
-        self.btn_commit = QPushButton("💾 Commit (0)")
+        self.btn_commit = QPushButton("Commit (0)")
+        style_icon_button(self.btn_commit, "commit", "Review and apply cell modifications", size=20, icon_only=False)
         self.btn_commit.setEnabled(False)
-        self.btn_commit.setToolTip("Review and apply cell modifications")
         self.btn_commit.clicked.connect(self._on_commit_clicked)
         top_bar.addWidget(self.btn_commit)
 
-        self.btn_revert = QPushButton("↩️ Revert")
+        self.btn_revert = QPushButton()
+        style_icon_button(self.btn_revert, "rollback", "Revert — discard all uncommitted cell edits", size=20, icon_only=True)
         self.btn_revert.setEnabled(False)
-        self.btn_revert.setToolTip("Discard all uncommitted cell edits")
         self.btn_revert.clicked.connect(self.revert_changes)
         top_bar.addWidget(self.btn_revert)
 
@@ -670,7 +691,7 @@ class EnhancedTableDataWidget(QWidget):
             self.data_table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
 
     def _on_dirty_count_changed(self, count: int) -> None:
-        self.btn_commit.setText(f"💾 Commit ({count})")
+        self.btn_commit.setText(f"Commit ({count})")
         self.btn_commit.setEnabled(count > 0)
         self.btn_revert.setEnabled(count > 0)
 

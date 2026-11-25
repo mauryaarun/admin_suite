@@ -10,7 +10,7 @@ import subprocess
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.ssh.remote_exec import RemoteExecThread
 from admin_suite.ui.dialogs import SudoCredentialsDialog, ensure_sudo_credentials
 from admin_suite.web.vhosts import VHostManagerWidget
@@ -77,7 +78,7 @@ class WebManagerTab(QWidget):
             )
             else ""
         )
-        title = QLabel(f"🌐 Web Hosting Manager — {self.profile_name}{is_local_display}")
+        title = QLabel(f"Web Hosting Manager — {self.profile_name}{is_local_display}")
         title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {theme.get('accent', '#3daee9')};")
         head_layout.addWidget(title)
 
@@ -100,22 +101,43 @@ class WebManagerTab(QWidget):
         self.sudo_chk.setChecked(True)
         head_layout.addWidget(self.sudo_chk)
 
-        self.sudo_btn = QPushButton("🔑")
-        self.sudo_btn.setToolTip("Configure Root / Sudo credentials for this profile")
-        self.sudo_btn.setFixedWidth(28)
+        self.sudo_btn = QPushButton()
+        style_icon_button(
+            self.sudo_btn,
+            "key",
+            "Configure Root / Sudo credentials for this profile",
+            icon_only=True,
+        )
         self.sudo_btn.clicked.connect(self._configure_sudo_credentials)
         head_layout.addWidget(self.sudo_btn)
 
-        settings_btn = QPushButton("⚙️ Distro & Log Settings")
-        settings_btn.setToolTip("Configure Linux distro preference, custom log paths, and firewall")
+        settings_btn = QPushButton()
+        style_icon_button(
+            settings_btn,
+            "settings",
+            "Configure Linux distro preference, custom log paths, and firewall",
+            icon_only=True,
+        )
         settings_btn.clicked.connect(self._open_settings)
         head_layout.addWidget(settings_btn)
 
-        test_syntax_btn = QPushButton("🩺 Test Syntax")
+        test_syntax_btn = QPushButton()
+        style_icon_button(
+            test_syntax_btn,
+            "check",
+            "Test Nginx / Apache configuration syntax",
+            icon_only=True,
+        )
         test_syntax_btn.clicked.connect(self._test_all_syntax)
         head_layout.addWidget(test_syntax_btn)
 
-        refresh_all_btn = QPushButton("🔄 Refresh All")
+        refresh_all_btn = QPushButton()
+        style_icon_button(
+            refresh_all_btn,
+            "refresh",
+            "Refresh all web server diagnostics",
+            icon_only=True,
+        )
         refresh_all_btn.clicked.connect(self.refresh_all)
         head_layout.addWidget(refresh_all_btn)
 
@@ -127,7 +149,7 @@ class WebManagerTab(QWidget):
         # 1. Virtual Hosts
         self.vhost_mgr = VHostManagerWidget(self.services, self.execute_command, self)
         self.vhost_mgr.status_message.connect(self._set_status)
-        self.tabs.addTab(self.vhost_mgr, "🌐 Virtual Hosts")
+        self.tabs.addTab(self.vhost_mgr, get_icon("globe", size=16), "Virtual Hosts")
 
         # 2. SSL/TLS Certificates
         self.ssl_mgr = SSLManagerWidget(self.services, self.execute_command, self)

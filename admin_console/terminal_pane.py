@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QTextCursor
+from PyQt6.QtGui import QColor, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +26,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import get_icon, style_icon_button
 
 
 class TerminalOutputPane(QWidget):
@@ -70,7 +73,7 @@ class TerminalOutputPane(QWidget):
         h_layout.setContentsMargins(6, 2, 6, 2)
         h_layout.setSpacing(6)
 
-        self.title_lbl = QLabel(f"📟 Terminal Output — {self.host_name}")
+        self.title_lbl = QLabel(f"Terminal Output — {self.host_name}")
         self.title_lbl.setStyleSheet(f"font-weight: bold; color: {self.theme.get('accent', '#3daee9')}; font-size: 12px;")
         h_layout.addWidget(self.title_lbl)
 
@@ -95,52 +98,46 @@ class TerminalOutputPane(QWidget):
         h_layout.addWidget(self.autoscroll_chk)
 
         # Font zoom buttons
-        self.btn_font_dec = QPushButton("A-")
-        self.btn_font_dec.setToolTip("Decrease Font Size (Ctrl + Wheel Down)")
-        self.btn_font_dec.setStyleSheet("font-size: 10px; padding: 1px 4px; font-weight: bold;")
-        self.btn_font_dec.setFixedWidth(24)
+        self.btn_font_dec = QPushButton()
+        style_icon_button(self.btn_font_dec, "zoom_out", "Decrease Font Size (Ctrl + Wheel Down)", icon_only=True)
         self.btn_font_dec.clicked.connect(self.zoom_out)
         h_layout.addWidget(self.btn_font_dec)
 
-        self.btn_font_inc = QPushButton("A+")
-        self.btn_font_inc.setToolTip("Increase Font Size (Ctrl + Wheel Up)")
-        self.btn_font_inc.setStyleSheet("font-size: 10px; padding: 1px 4px; font-weight: bold;")
-        self.btn_font_inc.setFixedWidth(24)
+        self.btn_font_inc = QPushButton()
+        style_icon_button(self.btn_font_inc, "zoom_in", "Increase Font Size (Ctrl + Wheel Up)", icon_only=True)
         self.btn_font_inc.clicked.connect(self.zoom_in)
         h_layout.addWidget(self.btn_font_inc)
 
-        self.btn_copy = QPushButton("📋 Copy")
-        self.btn_copy.setToolTip("Copy all terminal output to clipboard")
-        self.btn_copy.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.btn_copy = QPushButton()
+        style_icon_button(self.btn_copy, "copy", "Copy all terminal output to clipboard", icon_only=True)
         self.btn_copy.clicked.connect(self.copy_all)
         h_layout.addWidget(self.btn_copy)
 
-        self.btn_clear = QPushButton("🧹 Clear")
-        self.btn_clear.setToolTip("Clear terminal output")
-        self.btn_clear.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.btn_clear = QPushButton()
+        style_icon_button(self.btn_clear, "trash", "Clear terminal output", icon_only=True)
         self.btn_clear.clicked.connect(self.clear_output)
         h_layout.addWidget(self.btn_clear)
 
         # Quick size presets dropdown button
-        self.btn_size = QPushButton("↕ Size")
-        self.btn_size.setToolTip("Quick Resize Terminal Output Height (Compact, Standard, Expanded, 50%, Maximize)")
-        self.btn_size.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.btn_size = QPushButton()
+        style_icon_button(
+            self.btn_size,
+            "sliders",
+            "Quick Resize Terminal Output Height (Compact, Standard, Expanded, 50%, Maximize)",
+            icon_only=True,
+        )
         self.btn_size.clicked.connect(self._show_size_menu)
         h_layout.addWidget(self.btn_size)
 
         # Maximize / restore button
-        self.btn_maximize = QPushButton("⛶")
-        self.btn_maximize.setToolTip("Maximize / Restore Terminal Output (85% height)")
-        self.btn_maximize.setFixedWidth(24)
-        self.btn_maximize.setStyleSheet("font-size: 11px; font-weight: bold;")
+        self.btn_maximize = QPushButton()
+        style_icon_button(self.btn_maximize, "maximize", "Maximize / Restore Terminal Output (85% height)", icon_only=True)
         self.btn_maximize.clicked.connect(self._toggle_maximize)
         h_layout.addWidget(self.btn_maximize)
 
         # Collapse / expand button
-        self.btn_toggle = QPushButton("▼")
-        self.btn_toggle.setToolTip("Collapse/Expand terminal pane")
-        self.btn_toggle.setFixedWidth(24)
-        self.btn_toggle.setStyleSheet("font-size: 11px; font-weight: bold;")
+        self.btn_toggle = QPushButton()
+        style_icon_button(self.btn_toggle, "chevron_down", "Collapse/Expand terminal pane", icon_only=True)
         self.btn_toggle.clicked.connect(self._toggle_collapse)
         h_layout.addWidget(self.btn_toggle)
 
@@ -149,7 +146,7 @@ class TerminalOutputPane(QWidget):
         # 2. Main Terminal Output View
         self.output_text = QTextEdit()
         self.output_text.setReadOnly(True)
-        self.output_text.setFont(QFont("JetBrains Mono, DejaVu Sans Mono, Consolas, monospace", 10))
+        self.output_text.setFont(mono_font(10))
         self.output_text.setStyleSheet(
             "background-color: #0e1117; color: #dcdfe4; selection-background-color: #264f78; border: 1px solid #282c34;"
         )
@@ -163,12 +160,13 @@ class TerminalOutputPane(QWidget):
         cmd_layout.setSpacing(6)
 
         self.prompt_label = QLabel(f"admin@{self.host_name.split()[0].lower()}:~$")
-        self.prompt_label.setStyleSheet(f"color: {self.theme.get('accent', '#3daee9')}; font-family: monospace; font-weight: bold;")
+        self.prompt_label.setFont(mono_font(10, bold=True))
+        self.prompt_label.setStyleSheet(f"color: {self.theme.get('accent', '#3daee9')};")
         cmd_layout.addWidget(self.prompt_label)
 
         self.cmd_input = QLineEdit()
         self.cmd_input.setPlaceholderText("Type a shell command to execute on server (e.g. uname -a, iptables -L -n, df -h)...")
-        self.cmd_input.setFont(QFont("JetBrains Mono, Consolas, monospace", 10))
+        self.cmd_input.setFont(mono_font(10))
         self.cmd_input.returnPressed.connect(self._on_cmd_enter)
         self.cmd_input.installEventFilter(self)
         cmd_layout.addWidget(self.cmd_input, 1)
@@ -178,8 +176,8 @@ class TerminalOutputPane(QWidget):
         self.sudo_chk.setToolTip("Elevate command with sudo")
         cmd_layout.addWidget(self.sudo_chk)
 
-        self.btn_run = QPushButton("▶ Run")
-        self.btn_run.setStyleSheet("background: #1976d2; color: #fff; font-weight: bold; padding: 2px 10px;")
+        self.btn_run = QPushButton()
+        style_icon_button(self.btn_run, "play", "Execute shell command", icon_only=True, color="#22c55e")
         self.btn_run.clicked.connect(self._on_cmd_enter)
         cmd_layout.addWidget(self.btn_run)
 
@@ -348,7 +346,7 @@ class TerminalOutputPane(QWidget):
     def set_maximized(self, is_max: bool):
         self._is_maximized = is_max
         if hasattr(self, "btn_maximize"):
-            self.btn_maximize.setText("🗗" if is_max else "⛶")
+            self.btn_maximize.setIcon(get_icon("minimize" if is_max else "maximize", size=20))
             self.btn_maximize.setToolTip(
                 "Restore Terminal Height" if is_max else "Maximize Terminal Output (85% height)"
             )
@@ -357,14 +355,14 @@ class TerminalOutputPane(QWidget):
         self._is_collapsed = collapsed
         self.output_text.setVisible(not collapsed)
         self.cmd_bar.setVisible(not collapsed)
-        self.btn_toggle.setText("▲" if collapsed else "▼")
+        self.btn_toggle.setIcon(get_icon("chevron_up" if collapsed else "chevron_down", size=20))
         self.btn_toggle.setToolTip("Expand terminal pane" if collapsed else "Collapse terminal pane")
 
     def _toggle_collapse(self):
         self._is_collapsed = not self._is_collapsed
         self.output_text.setVisible(not self._is_collapsed)
         self.cmd_bar.setVisible(not self._is_collapsed)
-        self.btn_toggle.setText("▲" if self._is_collapsed else "▼")
+        self.btn_toggle.setIcon(get_icon("chevron_up" if self._is_collapsed else "chevron_down", size=20))
         self.btn_toggle.setToolTip("Expand terminal pane" if self._is_collapsed else "Collapse terminal pane")
         self.visibility_toggle_requested.emit()
 

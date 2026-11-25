@@ -5,15 +5,16 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import shlex
 from typing import Any, Optional
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.sftp.dialogs import ChmodDialog
 from admin_suite.sftp.editor import RemoteEditorTab
 from admin_suite.sftp.exec_worker import RemoteExecThread
@@ -23,13 +24,22 @@ from admin_suite.sftp.rsync import RsyncDialog
 from admin_suite.sftp.search import RemoteSearchDialog
 from admin_suite.sftp.worker import SftpWorker
 from admin_suite.sftp.external_editor import ExternalEditorManager
+from admin_suite.ssh.credentials import SshCredentials
+from admin_suite.terminal.ssh_tab import SshTerminalTab
 
 class SFTPTab(QWidget):
     """SFTP browser tab."""
+
+    tab_switch_requested = pyqtSignal(int)
+    terminal_theme_apply_all_requested = pyqtSignal(str)
+
     def __init__(
         self, services, main_window=None, *,
         host: str = "", port: int = 22, user: str = "", creds=None,
         name: str = "", use_agent: bool = False, strict_host_keys: Optional[bool] = None,
+        use_jump: bool = False, jump_host: Optional[str] = None, jump_port: int = 22,
+        jump_user: Optional[str] = None, jump_creds: Optional[SshCredentials] = None,
+        profile_name: Optional[str] = None, profile_data: Optional[dict] = None,
     ):
         super().__init__(main_window)
         self.services = services
@@ -46,6 +56,13 @@ class SFTPTab(QWidget):
         if strict_host_keys is None:
             strict_host_keys = bool(self.services.config.get("ssh_strict_host_keys", False))
         self.strict_host_keys = bool(strict_host_keys)
+        self.use_jump = bool(use_jump)
+        self.jump_host = jump_host
+        self.jump_port = jump_port
+        self.jump_user = jump_user
+        self.jump_creds = jump_creds
+        self.profile_name = profile_name or name or (f"{user}@{host}" if host else "SFTP SSH")
+        self.profile_data = profile_data or {}
         self.host_info = {
             "host": self.host, "port": self.port, "user": self.user,
             "creds": self.creds, "use_agent": self.use_agent,
@@ -62,11 +79,9 @@ class SFTPTab(QWidget):
         self._op_workers: list[SftpWorker] = []
         self._probe: Optional[RemoteExecThread] = None
 
-        # Remote console state
-        self._console_cwd: str = ""
-        self._console_home: str = ""
+        # Remote home directory state
+        self._remote_home: str = ""
         self._home_probe: Optional[RemoteExecThread] = None
-        self._console_worker: Optional[RemoteExecThread] = None
 
         # Tasks pane state
         self._tasks_visible: bool = True
@@ -82,7 +97,7 @@ class SFTPTab(QWidget):
 
         # ---- header ----
         head = QHBoxLayout()
-        title = QLabel(f"🔗 SFTP — {user}@{host}:{self.port}")
+        title = QLabel(f"SFTP — {user}@{host}:{self.port}")
         title.setStyleSheet(f"color:{theme['accent']};font-weight:bold;padding:4px;")
         head.addWidget(title)
 
@@ -91,31 +106,40 @@ class SFTPTab(QWidget):
         head.addWidget(self.conn_pill)
         head.addStretch()
 
-        test_btn = QPushButton("🩺 Test")
-        test_btn.setToolTip("Test SSH connectivity")
+        test_btn = QPushButton()
+        style_icon_button(test_btn, "activity", "Test SSH connectivity", icon_only=True)
         test_btn.clicked.connect(self.test_connection)
         head.addWidget(test_btn)
         layout.addLayout(head)
 
         # ---- action bar ----
         ab = QHBoxLayout()
-        up = QPushButton("⬆ Upload Selected")
+        up = QPushButton()
+        style_icon_button(up, "upload", "Upload selected files to remote host", icon_only=True)
         up.clicked.connect(self.upload_selected)
-        dn = QPushButton("⬇ Download Selected")
+
+        dn = QPushButton()
+        style_icon_button(dn, "download", "Download selected files to local folder", icon_only=True)
         dn.clicked.connect(self.download_selected)
-        srch = QPushButton("🔎 Remote Search…")
+
+        srch = QPushButton()
+        style_icon_button(srch, "search", "Search files on remote host", icon_only=True)
         srch.clicked.connect(self.remote_search)
-        rsync_btn = QPushButton("🔄 Rsync Folder")
+
+        rsync_btn = QPushButton()
+        style_icon_button(rsync_btn, "refresh", "Synchronize folder with Rsync", icon_only=True)
         rsync_btn.clicked.connect(self.open_rsync)
 
-        self.tasks_toggle = QPushButton("▼ Tasks")
-        self.tasks_toggle.setToolTip("Show/hide the transfer tasks queue")
+        self.tasks_toggle = QPushButton()
+        style_icon_button(
+            self.tasks_toggle,
+            "chevron_down",
+            "Show/hide the transfer tasks queue",
+            icon_only=True,
+        )
         self.tasks_toggle.setCheckable(True)
         self.tasks_toggle.setChecked(True)
         self.tasks_toggle.clicked.connect(self._toggle_tasks)
-        self.tasks_toggle.setStyleSheet(
-            f"padding:4px 10px;color:{theme['sub']};font-size:11px;"
-        )
 
         hint = QLabel("Tip: drag files/dirs between panels")
         hint.setStyleSheet(f"color:{theme['sub']};font-size:11px;")
@@ -160,7 +184,14 @@ class SFTPTab(QWidget):
 
         cancel_row = QHBoxLayout()
         cancel_row.addStretch()
-        cancel_btn = QPushButton("⛔ Cancel Current")
+        cancel_btn = QPushButton()
+        style_icon_button(
+            cancel_btn,
+            "stop",
+            "Cancel current transfer",
+            icon_only=True,
+            color="#ef4444",
+        )
         cancel_btn.clicked.connect(self.cancel_current)
         cancel_row.addWidget(cancel_btn)
 
@@ -175,44 +206,43 @@ class SFTPTab(QWidget):
         # Tab 1: Operation Log
         self.sftp_log = QPlainTextEdit()
         self.sftp_log.setReadOnly(True)
-        self.sftp_log.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.sftp_log.setFont(mono_font(10))
         self.sftp_log.setPlaceholderText("SFTP operation log…")
         self.sftp_log.setStyleSheet(
             f"background:{theme['panel']};border:1px solid {theme['border']};"
         )
-        self.bottom_tabs.addTab(self.sftp_log, "📜 Operation Log")
+        self.bottom_tabs.addTab(self.sftp_log, get_icon("file_text", size=16), "Operation Log")
 
-        # Tab 2: Remote Console (Quick Command Execution)
-        console_widget = QWidget()
-        console_lay = QVBoxLayout(console_widget)
-        console_lay.setContentsMargins(10, 10, 10, 10)
-
-        cmd_row = QHBoxLayout()
-        self.console_prompt = QLabel(f"{self.user}@{self.host}:~$ ")
-        self.console_prompt.setStyleSheet(
-            f"color:{theme['accent']};font-weight:bold;"
-            f"font-family:'JetBrains Mono, Consolas';"
+        # Tab 2: Live SSH Terminal for the connected SFTP server
+        self.ssh_terminal = SshTerminalTab(
+            self.services,
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            creds=self.creds or SshCredentials(),
+            name=self.name or (f"{self.user}@{self.host}" if self.host else "SSH"),
+            use_jump=self.use_jump,
+            jump_host=self.jump_host,
+            jump_port=self.jump_port,
+            jump_user=self.jump_user,
+            jump_creds=self.jump_creds,
+            use_agent=self.use_agent,
+            profile_name=self.profile_name,
+            strict_host_keys=self.strict_host_keys,
+            profile_data=self.profile_data,
         )
-        cmd_row.addWidget(self.console_prompt)
+        if hasattr(self.ssh_terminal, "tab_switch_requested"):
+            self.ssh_terminal.tab_switch_requested.connect(
+                self.tab_switch_requested.emit
+            )
+        if hasattr(self.ssh_terminal, "terminal_theme_apply_all_requested"):
+            self.ssh_terminal.terminal_theme_apply_all_requested.connect(
+                self.terminal_theme_apply_all_requested.emit
+            )
 
-        self.console_input = QLineEdit()
-        self.console_input.setFont(QFont("JetBrains Mono, Consolas", 10))
-        self.console_input.setPlaceholderText("Enter command and press Enter…")
-        self.console_input.returnPressed.connect(self._run_console_cmd)
-        cmd_row.addWidget(self.console_input, 1)
-        console_lay.addLayout(cmd_row)
-
-        self.console_out = QPlainTextEdit()
-        self.console_out.setReadOnly(True)
-        self.console_out.setFont(QFont("JetBrains Mono, Consolas", 10))
-        self.console_out.setStyleSheet(
-            f"background:{theme['panel']};color:{theme['text']};"
-            f"border:1px solid {theme['border']};"
+        self.bottom_tabs.addTab(
+            self.ssh_terminal, get_icon("terminal", size=16), "SSH Terminal"
         )
-        self.console_out.setPlaceholderText("Command output will appear here...")
-        console_lay.addWidget(self.console_out, 1)
-
-        self.bottom_tabs.addTab(console_widget, "💻 Remote Console")
 
         # Assemble main vertical splitter
         self.main_vsplitter.addWidget(h_splitter)
@@ -220,8 +250,8 @@ class SFTPTab(QWidget):
         self.main_vsplitter.addWidget(self.bottom_tabs)
         self.main_vsplitter.setStretchFactor(0, 4)
         self.main_vsplitter.setStretchFactor(1, 1)
-        self.main_vsplitter.setStretchFactor(2, 1)
-        self.main_vsplitter.setSizes([600, 150, 220])
+        self.main_vsplitter.setStretchFactor(2, 2)
+        self.main_vsplitter.setSizes([520, 140, 280])
         layout.addWidget(self.main_vsplitter, 1)
 
         # ---- progress + speed ----
@@ -251,13 +281,11 @@ class SFTPTab(QWidget):
     def _resolve_remote_home(self) -> None:
         user_str = str(self.user or "").strip()
         default_home = "/root" if user_str == "root" else (f"/home/{user_str}" if user_str else "/")
-        self._console_home = default_home
-        self._console_cwd = default_home
+        self._remote_home = default_home
         self.remote_panel.home_dir = default_home
         self.remote_panel.current_path = default_home
         self.remote_panel.path_input.setText(default_home)
         self.status_label.setText(f"Remote home: {default_home}")
-        self._update_console_prompt()
         self.remote_panel.refresh()
 
         try:
@@ -272,14 +300,12 @@ class SFTPTab(QWidget):
     def _home_probe_done(self, out: str, rc: int) -> None:
         home = out.strip()
         if rc == 0 and home and home.startswith("/"):
-            if home != self._console_home:
-                self._console_home = home
-                self._console_cwd = home
+            if home != self._remote_home:
+                self._remote_home = home
                 self.remote_panel.home_dir = home
                 self.remote_panel.current_path = home
                 self.remote_panel.path_input.setText(home)
                 self.status_label.setText(f"Remote home: {home}")
-                self._update_console_prompt()
                 self.remote_panel.refresh()
 
     # ------------------------------------------------------------
@@ -288,7 +314,9 @@ class SFTPTab(QWidget):
     def _toggle_tasks(self) -> None:
         self._tasks_visible = self.tasks_toggle.isChecked()
         self.tasks_container.setVisible(self._tasks_visible)
-        self.tasks_toggle.setText("▼ Tasks" if self._tasks_visible else "▶ Tasks")
+        self.tasks_toggle.setIcon(
+            get_icon("chevron_down" if self._tasks_visible else "chevron_right", size=20)
+        )
         if self._tasks_visible:
             sizes = self.main_vsplitter.sizes()
             total = sum(sizes)
@@ -535,66 +563,6 @@ class SFTPTab(QWidget):
         QTimer.singleShot(150, self._next_transfer)
 
     # ------------------------------------------------------------
-    # Remote Console (Quick Command Execution)
-    # ------------------------------------------------------------
-    def _fmt_cwd(self, path: str) -> str:
-        if not path:
-            return "/"
-        if self._console_home and path == self._console_home:
-            return "~"
-        if self._console_home and path.startswith(self._console_home + "/"):
-            return "~" + path[len(self._console_home):]
-        return path
-
-    def _update_console_prompt(self) -> None:
-        cwd_display = self._fmt_cwd(self._console_cwd) if self._console_cwd else "~"
-        self.console_prompt.setText(f"{self.user}@{self.host}:{cwd_display}$ ")
-
-    def _run_console_cmd(self) -> None:
-        cmd = self.console_input.text().strip()
-        if not cmd:
-            return
-        self.console_input.clear()
-        if not self._console_cwd:
-            self._console_cwd = self.remote_panel.current_path or "/"
-        cwd_display = self._fmt_cwd(self._console_cwd)
-        self.console_out.appendPlainText(f"{self.user}@{self.host}:{cwd_display}$ {cmd}")
-        self.console_input.setEnabled(False)
-        marker = "___ADMINSUITE_CWD___"
-        wrapped = (
-            f"cd {shlex.quote(self._console_cwd)} 2>/dev/null; "
-            f"{cmd}; "
-            f"__ec=$?; "
-            f"printf '\\n{marker}\\n'; "
-            f"pwd; "
-            f"exit $__ec"
-        )
-        self._console_worker = RemoteExecThread(self.host_info, wrapped, timeout=120)
-        self._console_worker.finished_cmd.connect(self._console_done)
-        self._console_worker.start()
-
-    def _console_done(self, out: str, rc: int) -> None:
-        self.console_input.setEnabled(True)
-        self.console_input.setFocus()
-        marker = "___ADMINSUITE_CWD___"
-        actual_out = out
-        if marker in out:
-            before, after = out.rsplit(marker, 1)
-            actual_out = before.rstrip("\n")
-            lines = [ln for ln in after.splitlines() if ln.strip()]
-            if lines:
-                new_cwd = lines[-1].strip()
-                if new_cwd and new_cwd.startswith("/"):
-                    self._console_cwd = new_cwd
-        if actual_out.strip():
-            self.console_out.appendPlainText(actual_out)
-        if rc != 0:
-            self.console_out.appendPlainText(f"[Process exited with code {rc}]")
-        self._update_console_prompt()
-        self.console_out.appendPlainText("")
-        self.console_out.moveCursor(QTextCursor.MoveOperation.End)
-
-    # ------------------------------------------------------------
     # File actions
     # ------------------------------------------------------------
     def on_file_action(self, action: str, path: str, panel_id: str) -> None:
@@ -602,7 +570,7 @@ class SFTPTab(QWidget):
             if action == "edit":
                 tab = RemoteEditorTab(self.services, self.host_info, path, parent=self.main_window)
                 if self.main_window and hasattr(self.main_window, "tabs"):
-                    idx = self.main_window.tabs.addTab(tab, f"✏️ {os.path.basename(path)}")
+                    idx = self.main_window.tabs.addTab(tab, get_icon("edit", size=16), os.path.basename(path))
                     self.main_window.tabs.setCurrentIndex(idx)
                 else:
                     tab.show()
@@ -760,4 +728,9 @@ class SFTPTab(QWidget):
                         worker.wait(1000)
                 except Exception:
                     pass
+        if getattr(self, "ssh_terminal", None) is not None:
+            try:
+                self.ssh_terminal.close()
+            except Exception:
+                pass
         event.accept()

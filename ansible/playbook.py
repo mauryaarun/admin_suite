@@ -12,7 +12,7 @@ import tempfile
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -31,6 +31,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import style_icon_button
 from admin_suite.ssh.credentials import profile_creds
 
 
@@ -298,7 +300,7 @@ class AnsiblePlaybookTab(QWidget):
 
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
-        self.output.setFont(QFont("JetBrains Mono, Consolas", 11))
+        self.output.setFont(mono_font(11))
 
         output_layout.addWidget(self.output)
 
@@ -311,17 +313,23 @@ class AnsiblePlaybookTab(QWidget):
         # Buttons.
         buttons = QHBoxLayout()
 
-        self.run_btn = QPushButton("▶ Run Playbook")
-        self.run_btn.setStyleSheet(
-            f"background:{theme['accent']};color:white;font-weight:bold;"
+        self.run_btn = QPushButton()
+        style_icon_button(
+            self.run_btn,
+            "play",
+            "Run Ansible Playbook on selected hosts",
+            icon_only=True,
+            color="#22c55e",
         )
         self.run_btn.clicked.connect(self.run_playbook)
 
-        self.stop_btn = QPushButton("⛔ Stop")
+        self.stop_btn = QPushButton()
+        style_icon_button(self.stop_btn, "stop", "Stop running playbook", icon_only=True, color="#ef4444")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_playbook)
 
-        clear = QPushButton("🧹 Clear Output")
+        clear = QPushButton()
+        style_icon_button(clear, "trash", "Clear playbook output", icon_only=True)
         clear.clicked.connect(lambda: self.output.clear())
 
         buttons.addWidget(self.run_btn)

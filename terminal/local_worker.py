@@ -42,6 +42,8 @@ class LocalTerminalWorker(QThread):
         name: str = "Local",
         cwd: Optional[str] = None,
         env: Optional[dict] = None,
+        cols: int = 80,
+        rows: int = 24,
     ):
         super().__init__()
 
@@ -49,6 +51,8 @@ class LocalTerminalWorker(QThread):
         self.name = name
         self.cwd = cwd
         self.extra_env = env or {}
+        self._cols = max(1, int(cols))
+        self._rows = max(1, int(rows))
 
         self.running = True
         self.process: Optional[subprocess.Popen] = None
@@ -88,6 +92,13 @@ class LocalTerminalWorker(QThread):
         try:
             master_fd, slave_fd = pty.openpty()
             self.master_fd = master_fd
+
+            # Apply initial terminal dimensions before starting the shell process.
+            try:
+                winsize = struct.pack("HHHH", self._rows, self._cols, 0, 0)
+                fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+            except Exception:
+                pass
 
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"

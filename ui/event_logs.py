@@ -14,7 +14,7 @@ import json
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,6 +31,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import style_icon_button
 
 
 LEVEL_COLORS = {
@@ -106,7 +109,7 @@ class EventLogsWidget(QWidget):
         self.source_combo.currentIndexChanged.connect(self._apply_filter)
 
         self.search_in = QLineEdit()
-        self.search_in.setPlaceholderText("🔍 Filter messages...")
+        self.search_in.setPlaceholderText("Filter messages...")
         self.search_in.setClearButtonEnabled(True)
         self.search_in.textChanged.connect(self._apply_filter)
 
@@ -122,16 +125,16 @@ class EventLogsWidget(QWidget):
         self.autoscroll_chk = QCheckBox("Auto-scroll")
         self.autoscroll_chk.setChecked(True)
 
-        self.copy_btn = QPushButton("📋 Copy")
-        self.copy_btn.setToolTip("Copy filtered logs to clipboard")
+        self.copy_btn = QPushButton()
+        style_icon_button(self.copy_btn, "copy", "Copy filtered logs to clipboard", icon_only=True)
         self.copy_btn.clicked.connect(self._copy_to_clipboard)
 
-        self.export_btn = QPushButton("💾 Export ▾")
-        self.export_btn.setToolTip("Export logs to file for auditing")
+        self.export_btn = QPushButton()
+        style_icon_button(self.export_btn, "export", "Export logs to file for auditing", icon_only=True)
         self._init_export_menu()
 
-        self.clear_btn = QPushButton("🗑 Clear")
-        self.clear_btn.setToolTip("Clear log view")
+        self.clear_btn = QPushButton()
+        style_icon_button(self.clear_btn, "trash", "Clear log view", icon_only=True)
         self.clear_btn.clicked.connect(self._clear_logs)
 
         row2.addWidget(self.autoscroll_chk)
@@ -148,7 +151,7 @@ class EventLogsWidget(QWidget):
         # --------------------------------------------------------
         self.console = QTextEdit()
         self.console.setReadOnly(True)
-        self.console.setFont(QFont("JetBrains Mono, Consolas, Courier New", 9))
+        self.console.setFont(mono_font(9))
         self.console.setStyleSheet(
             f"background:{theme.get('win', '#181818')};"
             f"color:{theme.get('text', '#d4d4d4')};"

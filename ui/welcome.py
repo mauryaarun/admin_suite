@@ -9,8 +9,8 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Optional
 
-from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtCore import Qt, QSettings, QSize
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.fonts import ui_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.core.paths import get_app_icon_path
 
 
@@ -100,8 +102,8 @@ class WelcomeWidget(QWidget):
         title_h = QHBoxLayout()
         title_h.setSpacing(8)
 
-        title_lbl = QLabel("🛠 ADMIN SUITE")
-        title_lbl.setFont(QFont("Segoe UI, Inter, Sans-serif", 15, QFont.Weight.Bold))
+        title_lbl = QLabel("ADMIN SUITE")
+        title_lbl.setFont(ui_font(15, bold=True))
         title_lbl.setStyleSheet(f"color:{theme.get('accent', '#3daee9')};")
 
         badge_lbl = QLabel("v5")
@@ -128,9 +130,9 @@ class WelcomeWidget(QWidget):
         top_row.addLayout(title_vbox, 1)
 
         # Quick stats line in expanded pane
-        self.stat_profiles = QLabel("🐚 SSH: <b>0</b>")
-        self.stat_dbs = QLabel("🗄️ DBs: <b>0</b>")
-        self.stat_theme = QLabel("🎨 Theme: <b>Default</b>")
+        self.stat_profiles = QLabel("SSH: <b>0</b>")
+        self.stat_dbs = QLabel("DBs: <b>0</b>")
+        self.stat_theme = QLabel("Theme: <b>Default</b>")
         pill_style = (
             f"background:{theme.get('win', '#181818')};color:{theme.get('text', '#ccc')};"
             f"font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid {theme.get('border', '#333')};"
@@ -140,12 +142,12 @@ class WelcomeWidget(QWidget):
             top_row.addWidget(lbl)
 
         # Title collapse toggle button
-        self.title_toggle_btn = QPushButton("▲ Collapse")
-        self.title_toggle_btn.setToolTip("Collapse header banner to save screen space")
-        self.title_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.title_toggle_btn.setStyleSheet(
-            f"background:{theme.get('win', '#181818')};border:1px solid {theme.get('border', '#333')};"
-            f"color:{theme.get('sub', '#888')};font-size:11px;padding:3px 8px;border-radius:4px;"
+        self.title_toggle_btn = QPushButton()
+        style_icon_button(
+            self.title_toggle_btn,
+            "chevron_up",
+            "Collapse header banner to save screen space",
+            icon_only=True,
         )
         self.title_toggle_btn.clicked.connect(self._toggle_title_pane)
         top_row.addWidget(self.title_toggle_btn)
@@ -168,26 +170,26 @@ class WelcomeWidget(QWidget):
             icon_lbl_sm.setFixedSize(22, 22)
             hero_col_layout.addWidget(icon_lbl_sm)
 
-        col_title = QLabel("🛠 ADMIN SUITE v5")
-        col_title.setFont(QFont("Segoe UI, Inter, Sans-serif", 11, QFont.Weight.Bold))
+        col_title = QLabel("ADMIN SUITE v5")
+        col_title.setFont(ui_font(11, bold=True))
         col_title.setStyleSheet(f"color:{theme.get('accent', '#3daee9')};")
         hero_col_layout.addWidget(col_title)
 
-        self.stat_profiles_sm = QLabel("🐚 SSH: <b>0</b>")
-        self.stat_dbs_sm = QLabel("🗄️ DBs: <b>0</b>")
-        self.stat_theme_sm = QLabel("🎨 Theme: <b>Default</b>")
+        self.stat_profiles_sm = QLabel("SSH: <b>0</b>")
+        self.stat_dbs_sm = QLabel("DBs: <b>0</b>")
+        self.stat_theme_sm = QLabel("Theme: <b>Default</b>")
         for lbl in (self.stat_profiles_sm, self.stat_dbs_sm, self.stat_theme_sm):
             lbl.setStyleSheet(pill_style)
             hero_col_layout.addWidget(lbl)
 
         hero_col_layout.addStretch()
 
-        self.title_expand_btn = QPushButton("▼ Expand")
-        self.title_expand_btn.setToolTip("Expand application title pane")
-        self.title_expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.title_expand_btn.setStyleSheet(
-            f"background:{theme.get('win', '#181818')};border:1px solid {theme.get('border', '#333')};"
-            f"color:{theme.get('sub', '#888')};font-size:11px;padding:3px 8px;border-radius:4px;"
+        self.title_expand_btn = QPushButton()
+        style_icon_button(
+            self.title_expand_btn,
+            "chevron_down",
+            "Expand application title pane",
+            icon_only=True,
         )
         self.title_expand_btn.clicked.connect(self._toggle_title_pane)
         hero_col_layout.addWidget(self.title_expand_btn)
@@ -204,8 +206,8 @@ class WelcomeWidget(QWidget):
         # Quick Actions Grid (Updated & Streamlined)
         # ------------------------------------------------------------
         qa_header_layout = QHBoxLayout()
-        qa_title = QLabel("🚀 Quick Actions")
-        qa_title.setFont(QFont("Segoe UI, Inter, Sans-serif", 12, QFont.Weight.Bold))
+        qa_title = QLabel("Quick Actions")
+        qa_title.setFont(ui_font(12, bold=True))
         qa_title.setStyleSheet(f"color:{theme.get('text', '#ffffff')};")
         qa_header_layout.addWidget(qa_title)
 
@@ -218,69 +220,75 @@ class WelcomeWidget(QWidget):
         cards_grid = QGridLayout()
         cards_grid.setSpacing(10)
 
-        cards_data: list[tuple[str, list[tuple[str, Callable[[], Any]]]]] = [
+        cards_data: list[tuple[str, str, list[tuple[str, str, Callable[[], Any]]]]] = [
             (
-                "🐚 Terminals & SSH",
+                "Terminals & SSH",
+                "terminal",
                 [
-                    ("⚡ Quick Terminal (Ctrl+T)", self.main_window._new_terminal_dialog),
-                    ("➕ Add SSH Profile", self.main_window.add_profile),
-                    ("💻 Local Shell (bash)", lambda: self.main_window.add_local_command_tab("bash", "Local Shell")),
-                    ("🪟 Split Multi-Terminal", self._open_split_quick),
+                    ("Quick Terminal (Ctrl+T)", "bolt", self.main_window._new_terminal_dialog),
+                    ("Add SSH Profile", "plus", self.main_window.add_profile),
+                    ("Local Shell (bash)", "terminal", lambda: self.main_window.add_local_command_tab("bash", "Local Shell")),
+                    ("Split Multi-Terminal", "split", self._open_split_quick),
                 ],
             ),
             (
-                "🗄️ Database Manager",
+                "Database Manager",
+                "database",
                 [
-                    ("🗄️ Database Workbench", self.main_window.open_db_manager),
-                    ("➕ Add DB Profile (MySQL/PG/SQLite)", self.main_window.add_db_profile),
-                    ("📈 MySQL Server Status", self.main_window.open_mysql_status_tab),
-                    ("🔍 DB Query History", self.main_window.open_db_manager),
+                    ("Database Workbench", "database", self.main_window.open_db_manager),
+                    ("Add DB Profile (MySQL/PG/SQLite)", "plus", self.main_window.add_db_profile),
+                    ("MySQL Server Status", "activity", self.main_window.open_mysql_status_tab),
+                    ("DB Query History", "clock", self.main_window.open_db_manager),
                 ],
             ),
             (
-                "📁 SFTP & Network Tools",
+                "SFTP & Network Tools",
+                "folder",
                 [
-                    ("📁 SFTP File Manager", self._open_sftp_quick),
-                    ("🔌 Port Forwarding & Tunnels", lambda: self.main_window.open_port_forwarding()),
-                    ("🔑 SSH Key Manager", self._open_key_manager),
-                    ("📥 Import ~/.ssh/config", self.main_window.import_ssh_config),
+                    ("SFTP File Manager", "folder", self._open_sftp_quick),
+                    ("Port Forwarding & Tunnels", "network", lambda: self.main_window.open_port_forwarding()),
+                    ("SSH Key Manager", "key", self._open_key_manager),
+                    ("Import ~/.ssh/config", "upload", self.main_window.import_ssh_config),
                 ],
             ),
             (
-                "🖥️ SysAdmin & Linux OS",
+                "SysAdmin & Linux OS",
+                "server",
                 [
-                    ("📊 SysAdmin Dashboard", self.main_window.open_sysadmin_selected),
-                    ("⚙️ Linux & Distro Settings", self._open_linux_settings),
-                    ("🎬 Session Log Recordings", self._open_session_logs),
-                    ("📡 Ping All Configured Hosts", self.main_window._ping_all_profiles),
+                    ("SysAdmin Dashboard", "activity", self.main_window.open_sysadmin_selected),
+                    ("Linux & Distro Settings", "settings", self._open_linux_settings),
+                    ("Session Log Recordings", "file_text", self._open_session_logs),
+                    ("Ping All Configured Hosts", "wifi", self.main_window._ping_all_profiles),
                 ],
             ),
             (
-                "📝 DevOps & Automation",
+                "DevOps & Automation",
+                "layers",
                 [
-                    ("📝 Ansible Multi-Host Runner", self.main_window.open_ansible_tab),
-                    ("📜 Ansible Playbook Executor", self.main_window.open_ansible_playbook_tab),
-                    ("📋 Command Snippets Library", self.main_window.open_snippets),
-                    ("📢 Toggle Broadcast Mode (F8)", self.main_window.toggle_broadcast),
+                    ("Ansible Multi-Host Runner", "play", self.main_window.open_ansible_tab),
+                    ("Ansible Playbook Executor", "file_text", self.main_window.open_ansible_playbook_tab),
+                    ("Command Snippets Library", "code", self.main_window.open_snippets),
+                    ("Toggle Broadcast Mode (F8)", "broadcast", self.main_window.toggle_broadcast),
                 ],
             ),
             (
-                "🛡️ Security, Web & Admin",
+                "Security, Web & Admin",
+                "shield",
                 [
-                    ("🖥️ Unified Admin Console", self.main_window.open_admin_console_selected),
-                    ("🔍 VAPT & Web Security Audit", self.main_window.open_vapt_tab),
-                    ("🛡️ Security Center (Firewall/Fail2ban)", self.main_window.open_security_hub_selected),
-                    ("🌐 Web & Virtual Host Manager", self.main_window.open_web_manager_selected),
-                    ("🔒 VPN Profiles & WireGuard Server", self.main_window.open_vpn_config_dialog),
-                    ("⚡ Quick VPN Toggle", self.main_window.vpn.toggle),
-                    ("🤖 AI Copilot (Ctrl+Shift+A)", lambda: self.main_window.toggle_copilot(True)),
+                    ("Unified Admin Console", "terminal", self.main_window.open_admin_console_selected),
+                    ("VAPT & Web Security Audit", "search", self.main_window.open_vapt_tab),
+                    ("Security Center (Firewall/Fail2ban)", "shield", self.main_window.open_security_hub_selected),
+                    ("Web & Virtual Host Manager", "globe", self.main_window.open_web_manager_selected),
+                    ("VPN Profiles & WireGuard Server", "lock", self.main_window.open_vpn_config_dialog),
+                    ("Quick VPN Toggle", "bolt", self.main_window.vpn.toggle),
+                    ("AI Copilot (Ctrl+Shift+A)", "bot", lambda: self.main_window.toggle_copilot(True)),
                 ],
             ),
         ]
 
         row, col = 0, 0
-        for card_title, actions in cards_data:
-            card = self._create_card(card_title, actions, theme)
+        for card_title, card_icon, actions in cards_data:
+            card = self._create_card(card_title, card_icon, actions, theme)
             cards_grid.addWidget(card, row, col)
             col += 1
             if col >= 3:
@@ -308,17 +316,22 @@ class WelcomeWidget(QWidget):
         recent_box.setSpacing(4)
 
         recent_header = QHBoxLayout()
-        recent_title = QLabel("🕒 Recent Connections")
-        recent_title.setFont(QFont("Segoe UI, Inter, Sans-serif", 11, QFont.Weight.Bold))
+        recent_icon_lbl = QLabel()
+        recent_icon_lbl.setPixmap(get_icon("clock", size=16).pixmap(16, 16))
+        recent_header.addWidget(recent_icon_lbl)
+        recent_title = QLabel("Recent Connections")
+        recent_title.setFont(ui_font(11, bold=True))
         recent_title.setStyleSheet(f"color:{theme.get('text', '#ffffff')};")
         recent_header.addWidget(recent_title)
         recent_header.addStretch()
 
-        self.recent_toggle_btn = QPushButton("▲ Collapse" if not self._recent_collapsed else "▼ Expand")
-        self.recent_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.recent_toggle_btn.setStyleSheet(
-            f"background:{theme.get('win', '#181818')};border:1px solid {theme.get('border', '#333')};"
-            f"color:{theme.get('sub', '#888')};font-size:10px;padding:2px 6px;border-radius:3px;"
+        self.recent_toggle_btn = QPushButton()
+        style_icon_button(
+            self.recent_toggle_btn,
+            "chevron_down" if self._recent_collapsed else "chevron_up",
+            "Expand recent connections" if self._recent_collapsed else "Collapse recent connections",
+            size=16,
+            icon_only=True,
         )
         self.recent_toggle_btn.clicked.connect(self._toggle_recent_pane)
         recent_header.addWidget(self.recent_toggle_btn)
@@ -345,17 +358,22 @@ class WelcomeWidget(QWidget):
         shortcuts_box.setSpacing(4)
 
         shortcuts_header = QHBoxLayout()
-        shortcuts_title = QLabel("⌨️ Productivity Shortcuts")
-        shortcuts_title.setFont(QFont("Segoe UI, Inter, Sans-serif", 11, QFont.Weight.Bold))
+        shortcuts_icon_lbl = QLabel()
+        shortcuts_icon_lbl.setPixmap(get_icon("command", size=16).pixmap(16, 16))
+        shortcuts_header.addWidget(shortcuts_icon_lbl)
+        shortcuts_title = QLabel("Productivity Shortcuts")
+        shortcuts_title.setFont(ui_font(11, bold=True))
         shortcuts_title.setStyleSheet(f"color:{theme.get('text', '#ffffff')};")
         shortcuts_header.addWidget(shortcuts_title)
         shortcuts_header.addStretch()
 
-        self.shortcuts_toggle_btn = QPushButton("▲ Collapse" if not self._shortcuts_collapsed else "▼ Expand")
-        self.shortcuts_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.shortcuts_toggle_btn.setStyleSheet(
-            f"background:{theme.get('win', '#181818')};border:1px solid {theme.get('border', '#333')};"
-            f"color:{theme.get('sub', '#888')};font-size:10px;padding:2px 6px;border-radius:3px;"
+        self.shortcuts_toggle_btn = QPushButton()
+        style_icon_button(
+            self.shortcuts_toggle_btn,
+            "chevron_down" if self._shortcuts_collapsed else "chevron_up",
+            "Expand keyboard shortcuts" if self._shortcuts_collapsed else "Collapse keyboard shortcuts",
+            size=16,
+            icon_only=True,
         )
         self.shortcuts_toggle_btn.clicked.connect(self._toggle_shortcuts_pane)
         shortcuts_header.addWidget(self.shortcuts_toggle_btn)
@@ -370,12 +388,12 @@ class WelcomeWidget(QWidget):
         shortcuts_list = [
             ("Ctrl + K", "Command Palette"),
             ("Ctrl + T", "New Terminal"),
+            ("Shift + ← / →", "Switch Tabs"),
             ("Ctrl + Shift + A", "AI Copilot"),
             ("Ctrl + Shift + L", "Event & Audit Logs"),
             ("Ctrl + B", "Toggle Sidebar"),
             ("F8", "Broadcast Input"),
             ("Ctrl + W", "Close Tab"),
-            ("Ctrl + Shift + T", "Reopen Last Tab"),
         ]
 
         for i, (key, desc) in enumerate(shortcuts_list):
@@ -408,7 +426,8 @@ class WelcomeWidget(QWidget):
     def _create_card(
         self,
         title: str,
-        actions: list[tuple[str, Callable[[], Any]]],
+        icon_name: str,
+        actions: list[tuple[str, str, Callable[[], Any]]],
         theme: dict[str, str],
     ) -> QFrame:
         card = QFrame()
@@ -421,14 +440,23 @@ class WelcomeWidget(QWidget):
         card_layout.setContentsMargins(5, 5, 5, 5)
         card_layout.setSpacing(3)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 2)
+        header_row.setSpacing(6)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(get_icon(icon_name, size=18).pixmap(18, 18))
+        header_row.addWidget(icon_lbl)
+
         header = QLabel(title)
-        header.setFont(QFont("Segoe UI, Inter, Sans-serif", 10, QFont.Weight.Bold))
-        header.setStyleSheet(f"color:{theme.get('accent', '#3daee9')};padding-bottom:1px;")
-        card_layout.addWidget(header)
+        header.setFont(ui_font(10, bold=True))
+        header.setStyleSheet(f"color:{theme.get('accent', '#3daee9')};")
+        header_row.addWidget(header)
+        header_row.addStretch()
+        card_layout.addLayout(header_row)
 
         btn_style = (
             f"QPushButton {{"
-            f"  text-align:left;padding:4px 7px;background:{theme.get('win', '#181818')};"
+            f"  text-align:left;padding:5px 8px;background:{theme.get('win', '#181818')};"
             f"  border:1px solid {theme.get('border', '#2e2e2e')};border-radius:4px;"
             f"  color:{theme.get('text', '#ccc')};font-size:11px;"
             f"}}"
@@ -441,8 +469,10 @@ class WelcomeWidget(QWidget):
             f"}}"
         )
 
-        for text, callback in actions:
+        for text, action_icon, callback in actions:
             btn = QPushButton(text)
+            btn.setIcon(get_icon(action_icon, size=18))
+            btn.setIconSize(QSize(18, 18))
             btn.setStyleSheet(btn_style)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(callback)
@@ -461,14 +491,26 @@ class WelcomeWidget(QWidget):
         """Toggle collapsed state of shortcuts reference pane."""
         self._shortcuts_collapsed = not self._shortcuts_collapsed
         self.shortcuts_body.setVisible(not self._shortcuts_collapsed)
-        self.shortcuts_toggle_btn.setText("▼ Expand" if self._shortcuts_collapsed else "▲ Collapse")
+        style_icon_button(
+            self.shortcuts_toggle_btn,
+            "chevron_down" if self._shortcuts_collapsed else "chevron_up",
+            "Expand keyboard shortcuts" if self._shortcuts_collapsed else "Collapse keyboard shortcuts",
+            size=16,
+            icon_only=True,
+        )
         self._settings.setValue("welcome/shortcuts_collapsed", self._shortcuts_collapsed)
 
     def _toggle_recent_pane(self) -> None:
         """Toggle collapsed state of recent connections pane."""
         self._recent_collapsed = not self._recent_collapsed
         self.recent_body.setVisible(not self._recent_collapsed)
-        self.recent_toggle_btn.setText("▼ Expand" if self._recent_collapsed else "▲ Collapse")
+        style_icon_button(
+            self.recent_toggle_btn,
+            "chevron_down" if self._recent_collapsed else "chevron_up",
+            "Expand recent connections" if self._recent_collapsed else "Collapse recent connections",
+            size=16,
+            icon_only=True,
+        )
         self._settings.setValue("welcome/recent_collapsed", self._recent_collapsed)
 
     def refresh_recent(self) -> None:
@@ -497,16 +539,10 @@ class WelcomeWidget(QWidget):
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
-            lbl = QLabel(f"● {name}")
+            lbl = QLabel(name)
             lbl.setStyleSheet(f"color:{theme.get('text', '#eee')};font-size:11.5px;")
-            btn = QPushButton("Connect")
-            btn.setFixedHeight(22)
-            btn.setFixedWidth(64)
-            btn.setStyleSheet(
-                f"padding:2px 6px;font-size:10.5px;background:{theme.get('win', '#181818')};"
-                f"border:1px solid {theme.get('border', '#333')};border-radius:3px;"
-                f"color:{theme.get('accent', '#3daee9')};font-weight:bold;"
-            )
+            btn = QPushButton()
+            style_icon_button(btn, "link", f"Connect to {name}", size=18, icon_only=True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, n=name: self.main_window.connect_profile(n))
             row.addWidget(lbl, 1)
@@ -519,9 +555,9 @@ class WelcomeWidget(QWidget):
         db_count = len(getattr(self.main_window, "db_profiles", {}))
         theme_name = getattr(self.services.theme, "name", getattr(self.services.theme, "current_name", "Breeze Dark"))
 
-        prof_text = f"🐚 SSH: <b>{p_count}</b>"
-        db_text = f"🗄️ DBs: <b>{db_count}</b>"
-        theme_text = f"🎨 Theme: <b>{theme_name}</b>"
+        prof_text = f"SSH: <b>{p_count}</b>"
+        db_text = f"DBs: <b>{db_count}</b>"
+        theme_text = f"Theme: <b>{theme_name}</b>"
 
         self.stat_profiles.setText(prof_text)
         self.stat_dbs.setText(db_text)
@@ -563,24 +599,7 @@ class WelcomeWidget(QWidget):
                 if ok and chosen:
                     name = chosen
         if name and name in self.main_window.profiles:
-            data = self.main_window.profiles[name]
-            from admin_suite.terminal.split_tab import SplitTerminalTab
-
-            tab = SplitTerminalTab(self.services, name, data)
-            for terminal in tab.terminals:
-                self.main_window._connect_terminal(terminal)
-
-            original_add_pane = tab.add_pane
-
-            def wrapped_add_pane(orientation):
-                original_add_pane(orientation)
-                for terminal in tab.terminals:
-                    self.main_window._connect_terminal(terminal)
-
-            tab.add_pane = wrapped_add_pane
-            index = self.main_window.tabs.addTab(tab, f"⧉ {name}")
-            self.main_window.tabs.setCurrentIndex(index)
-            self.main_window.add_recent(name)
+            self.main_window.open_split_profile(name)
         else:
             self.main_window._notify("Select or add an SSH profile to open Split Terminal")
 

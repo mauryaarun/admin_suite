@@ -107,7 +107,7 @@ class AppServices:
         """
         Apply configured UI theme to a QApplication instance.
         """
-        theme_name = self.config.get("ui_theme", "Breeze Dark")
+        theme_name = self.config.get("ui_theme", "System")
         self.theme.apply(app, theme_name)
 
     def load_passwords(self) -> dict[str, str]:

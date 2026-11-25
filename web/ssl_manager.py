@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
 
 
 class CertbotRequestDialog(QDialog):
@@ -193,7 +194,7 @@ class SSLManagerWidget(QWidget):
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMaximumHeight(140)
-        self.log_output.setFont(QFont("JetBrains Mono, Consolas", 9))
+        self.log_output.setFont(mono_font(9))
         self.log_output.setPlaceholderText("Execution log & renewal output...")
         ReportExporter.attach_export_context_menu(self.log_output)
         layout.addWidget(self.log_output)

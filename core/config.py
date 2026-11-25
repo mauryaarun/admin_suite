@@ -40,7 +40,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "session_logging": True,
 
     # UI.
-    "ui_theme": "Breeze Dark",
+    "ui_theme": "System",
     "auto_open_mysql_status": False,
 
     # Ansible.
@@ -48,6 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     # SFTP.
     "sftp_default_local": str(Path.home()),
+    "sftp_path_history": {},
 
     # SSH security.
     "ssh_strict_host_keys": False,
@@ -71,10 +72,10 @@ class ConfigStore:
     Secrets are not stored here. Secrets should be stored through SecretStore.
     """
 
-    def __init__(self, path: str | Path = CONFIG_FILE):
+    def __init__(self, path: str | Path | None = None):
         ensure_dirs()
 
-        self.path = Path(path)
+        self.path = Path(path if path is not None else CONFIG_FILE)
         self.data: dict[str, Any] = dict(DEFAULT_CONFIG)
 
         self.load()

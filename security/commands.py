@@ -6,6 +6,7 @@ Fail2ban, Network Exposure, SSH Hardening, and System Security Auditing.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import Any, Dict, List, Optional, Tuple
@@ -545,37 +546,86 @@ class SecurityCommands:
             "for p in /usr/share/xml/scap/ssg/content/*-ds.xml /usr/share/scap-security-guide/*-ds.xml; do "
             "  if [ -f \"$p\" ]; then echo \"DS:$p\"; fi; "
             "done; "
+            "if which find >/dev/null 2>&1; then "
+            "  find /usr/share/xml/scap /usr/share/scap-security-guide /usr/share/openscap /usr/local/share/xml/scap /var/lib/openscap "
+            "  -type f \\( -name \"*-ds.xml\" -o -name \"ssg-*-ds.xml\" -o -name \"*xccdf*.xml\" -o -name \"*datastream*.xml\" \\) 2>/dev/null | sort -V | uniq | while read -r f; do "
+            "    echo \"DS:$f\"; "
+            "  done; "
+            "fi; "
             "echo '=== HTML_DIR ==='; "
-            "if [ -d /var/www/html ]; then echo 'HTML_DIR:/var/www/html'; else echo 'HTML_DIR:/tmp'; fi"
+            "if [ -d /var/www/html ]; then echo 'HTML_DIR:/var/www/html'; else echo 'HTML_DIR:/tmp'; fi; "
+            "echo '=== REPORTS_DIR ==='; "
+            "echo \"REPORTS_DIR:$HOME/reports\""
         )
 
     @staticmethod
     def openscap_list_profiles(datastream_path: str) -> str:
         clean_ds = shlex.quote(datastream_path.strip())
-        return f"oscap info {clean_ds} 2>/dev/null"
+        return (
+            f"if which oscap >/dev/null 2>&1 && oscap info {clean_ds} 2>/dev/null | grep -q 'Profiles:'; then "
+            f"  oscap info {clean_ds} 2>/dev/null; "
+            f"else "
+            f"  python3 -c \"import re, sys\\n"
+            f"try:\\n"
+            f"    with open(sys.argv[1], 'r', errors='ignore') as f:\\n"
+            f"        pid = None\\n"
+            f"        for line in f:\\n"
+            f"            if 'Profile id=' in line:\\n"
+            f"                m = re.search(r'Profile\\\\s+id=[\\\\\\\"\\\\\']([^\\\\\\\"\\\\\']+)[\\\\\\\"\\\\\']', line)\\n"
+            f"                if m: pid = m.group(1)\\n"
+            f"            elif pid and ('<title' in line or ':title' in line):\\n"
+            f"                m = re.search(r'>([^<]+)<', line)\\n"
+            f"                if m:\\n"
+            f"                    print(f'Profiles:\\\\n\\\\tTitle: {{m.group(1).strip()}}\\\\n\\\\t\\\\tId: {{pid}}')\\n"
+            f"                    pid = None\\n"
+            f"except Exception:\\n"
+            f"    pass\" {clean_ds} 2>/dev/null || oscap info {clean_ds} 2>/dev/null; "
+            f"fi"
+        )
 
     @staticmethod
     def openscap_eval(
         profile: str,
         datastream_path: str,
-        report_path: str = "/var/www/html/rhel-cis-report.html",
+        report_path: str = "~/reports/scap-compliance-report.html",
         results_path: str = "",
     ) -> str:
         clean_profile = shlex.quote(profile.strip())
         clean_ds = shlex.quote(datastream_path.strip())
-        clean_rep = shlex.quote(report_path.strip())
+        rep = report_path.strip() or "~/reports/scap-compliance-report.html"
+        if rep.startswith("~/"):
+            rep_expr = f'"$HOME/{rep[2:]}"'
+        else:
+            rep_expr = shlex.quote(rep)
         res_arg = f"--results {shlex.quote(results_path.strip())} " if results_path.strip() else ""
         return (
-            f"mkdir -p $(dirname {clean_rep}) && "
-            f"oscap xccdf eval --profile {clean_profile} --report {clean_rep} {res_arg}{clean_ds} 2>&1; "
+            f"mkdir -p $(dirname {rep_expr}) && "
+            f"oscap xccdf eval --profile {clean_profile} --report {rep_expr} {res_arg}{clean_ds} 2>&1; "
             f"echo \"OSCAP_EXIT:$?\""
         )
 
     @staticmethod
-    def openscap_generate_fix(profile: str, datastream_path: str) -> str:
+    def openscap_generate_fix(
+        profile: str,
+        datastream_path: str,
+        fix_type: str = "bash",
+        output_path: str = "",
+    ) -> str:
         clean_profile = shlex.quote(profile.strip())
         clean_ds = shlex.quote(datastream_path.strip())
-        return f"oscap xccdf generate fix --profile {clean_profile} {clean_ds} 2>&1"
+        fix_opt = f"--fix-type {shlex.quote(fix_type.strip())} " if fix_type.strip() else ""
+        if output_path.strip():
+            out_p = output_path.strip()
+            if out_p.startswith("~/"):
+                out_expr = f'"$HOME/{out_p[2:]}"'
+            else:
+                out_expr = shlex.quote(out_p)
+            return (
+                f"mkdir -p $(dirname {out_expr}) && "
+                f"oscap xccdf generate fix --profile {clean_profile} {fix_opt}{clean_ds} > {out_expr} 2>&1 && "
+                f"cat {out_expr}"
+            )
+        return f"oscap xccdf generate fix --profile {clean_profile} {fix_opt}{clean_ds} 2>&1"
 
     # ---------------- Auditd (Auditing & Event Tracking) ----------------
     AUDITD_USER_ACCOUNT_RULES = [
@@ -699,6 +749,137 @@ class SecurityCommands:
         elif report_type == "failed":
             flag = "--failed"
         return f"aureport {flag} -ts {shlex.quote(time_range)} 2>/dev/null"
+
+    # ---------------- System Log Viewer Commands ----------------
+    @staticmethod
+    def system_logs_combined(lines: int = 500) -> str:
+        """
+        Default system log view: displays /var/log/messages (with /var/log/syslog fallback)
+        and journalctl logs from the last 1 day.
+        """
+        safe_lines = max(10, min(10000, int(lines)))
+        return (
+            "echo '=== SYSTEM LOG (/var/log/messages / /var/log/syslog) ==='; "
+            "if [ -s /var/log/messages ]; then "
+            "  echo '--- Source: /var/log/messages ---'; "
+            f"  tail -n {safe_lines} /var/log/messages 2>/dev/null; "
+            "elif [ -s /var/log/syslog ]; then "
+            "  echo '--- Source: /var/log/syslog ---'; "
+            f"  tail -n {safe_lines} /var/log/syslog 2>/dev/null; "
+            "elif [ -f /var/log/messages ]; then "
+            "  echo '--- Source: /var/log/messages (empty) ---'; "
+            "elif [ -f /var/log/syslog ]; then "
+            "  echo '--- Source: /var/log/syslog (empty) ---'; "
+            "else "
+            "  echo 'No /var/log/messages or /var/log/syslog accessible'; "
+            "fi; "
+            "echo; "
+            "echo '=== SYSTEMD JOURNALCTL (Since 1 day ago) ==='; "
+            "if which journalctl >/dev/null 2>&1; then "
+            f"  journalctl --since '1 day ago' -n {safe_lines} --no-pager 2>&1 || echo 'journalctl error'; "
+            "else "
+            "  echo 'journalctl not available on this system'; "
+            "fi"
+        )
+
+    @staticmethod
+    def system_logs_syslog(
+        path: str = "/var/log/messages",
+        lines: int = 500,
+        grep_filter: str = "",
+    ) -> str:
+        """Fetch lines from a syslog file with Debian/RHEL fallback and optional grep."""
+        safe_lines = max(10, min(10000, int(lines)))
+        clean_path = path.strip() or "/var/log/messages"
+        q_path = shlex.quote(clean_path)
+
+        grep_pipe = ""
+        if grep_filter.strip():
+            clean_grep = shlex.quote(grep_filter.strip())
+            grep_pipe = f" | grep -Ei {clean_grep}"
+
+        return (
+            f"if [ -f {q_path} ]; then "
+            f"  echo '--- Log File: {clean_path} ---'; "
+            f"  tail -n {safe_lines} {q_path} 2>&1{grep_pipe}; "
+            f"elif [ {q_path} = '/var/log/messages' ] && [ -f /var/log/syslog ]; then "
+            "  echo 'Note: /var/log/messages not found on this system (common on Debian/Ubuntu). Showing /var/log/syslog:'; "
+            f"  tail -n {safe_lines} /var/log/syslog 2>&1{grep_pipe}; "
+            f"elif [ {q_path} = '/var/log/syslog' ] && [ -f /var/log/messages ]; then "
+            "  echo 'Note: /var/log/syslog not found on this system (common on RHEL/CentOS). Showing /var/log/messages:'; "
+            f"  tail -n {safe_lines} /var/log/messages 2>&1{grep_pipe}; "
+            "else "
+            f"  echo 'Log file not found: {clean_path}'; "
+            "fi"
+        )
+
+    @staticmethod
+    def system_logs_journalctl(
+        since: str = "1 day ago",
+        unit: str = "",
+        user: str = "",
+        priority: str = "",
+        lines: int = 500,
+        grep_filter: str = "",
+    ) -> str:
+        """
+        Fetch journalctl logs with service/unit filtering, username/UID filtering,
+        priority level filtering, and since duration.
+        """
+        safe_lines = max(10, min(10000, int(lines)))
+        parts = ["journalctl"]
+
+        clean_since = since.strip()
+        if clean_since and clean_since.lower() not in ("all", "all time", "none"):
+            parts.extend(["--since", shlex.quote(clean_since)])
+
+        clean_unit = unit.strip()
+        if clean_unit:
+            parts.extend(["-u", shlex.quote(clean_unit)])
+
+        clean_priority = priority.strip()
+        if clean_priority and clean_priority.lower() not in ("all", "any"):
+            parts.extend(["-p", shlex.quote(clean_priority)])
+
+        parts.extend(["-n", str(safe_lines), "--no-pager"])
+
+        grep_pipe = ""
+        if grep_filter.strip():
+            clean_grep = shlex.quote(grep_filter.strip())
+            grep_pipe = f" | grep -Ei {clean_grep}"
+
+        clean_user = user.strip()
+        if clean_user:
+            q_user = shlex.quote(clean_user)
+            # Resolve UID dynamically if string username is given or use UID directly
+            base_cmd = " ".join(parts)
+            return (
+                f"UID_VAL=$(id -u {q_user} 2>/dev/null || echo {q_user}); "
+                f"{base_cmd} _UID=\"$UID_VAL\" 2>&1{grep_pipe}"
+            )
+
+        return f"{' '.join(parts)} 2>&1{grep_pipe}"
+
+    @staticmethod
+    def discover_system_logs() -> str:
+        """Probes for presence and sizes of important syslog files."""
+        return (
+            "echo '=== SYSLOG_FILES ==='; "
+            "for f in /var/log/messages /var/log/syslog /var/log/auth.log /var/log/secure "
+            "/var/log/kern.log /var/log/cron /var/log/cron.log /var/log/fail2ban.log "
+            "/var/log/audit/audit.log /var/log/boot.log /var/log/daemon.log /var/log/dmesg; do "
+            "  if [ -f \"$f\" ]; then "
+            "    sz=$(ls -lh \"$f\" 2>/dev/null | awk '{print $5}'); "
+            "    echo \"FOUND|$f|$sz\"; "
+            "  fi; "
+            "done; "
+            "echo '=== JOURNALCTL_STATUS ==='; "
+            "if which journalctl >/dev/null 2>&1; then "
+            "  echo 'journalctl:available'; "
+            "else "
+            "  echo 'journalctl:unavailable'; "
+            "fi"
+        )
 
 
 class SecurityParsers:
@@ -1757,6 +1938,7 @@ class SecurityParsers:
             "installed": False,
             "datastreams": [],
             "html_dir": "/var/www/html",
+            "reports_dir": os.path.expanduser("~/reports"),
         }
         for line in raw.splitlines():
             line_s = line.strip()
@@ -1768,6 +1950,8 @@ class SecurityParsers:
                     info["datastreams"].append(ds)
             elif line_s.startswith("HTML_DIR:"):
                 info["html_dir"] = line_s.split(":", 1)[1].strip()
+            elif line_s.startswith("REPORTS_DIR:"):
+                info["reports_dir"] = line_s.split(":", 1)[1].strip()
         return info
 
     @classmethod
@@ -1789,11 +1973,16 @@ class SecurityParsers:
                 if cur_id and cur_title:
                     flush()
                 cur_title = line_s.split(":", 1)[1].strip()
-            m = re.search(r'(xccdf_org\.ssgproject\.content_profile_[a-zA-Z0-9_\-]+)', line_s)
-            if m:
-                if cur_id:
+            elif line_s.startswith("Id:"):
+                if cur_id and cur_title:
                     flush()
-                cur_id = m.group(1)
+                cur_id = line_s.split(":", 1)[1].strip()
+            else:
+                m = re.search(r'(xccdf_org\.ssgproject\.content_profile_[a-zA-Z0-9_\-]+)', line_s)
+                if m:
+                    if cur_id and cur_title:
+                        flush()
+                    cur_id = m.group(1)
 
         flush()
         return profiles
@@ -1970,5 +2159,25 @@ class SecurityParsers:
             if ev["type"] or ev["comm"] or ev["key"] or ev["exe"]:
                 events.append(ev)
         return events
+
+    @classmethod
+    def parse_discovered_system_logs(cls, raw: str) -> Dict[str, Any]:
+        """Parses output of SecurityCommands.discover_system_logs()."""
+        result: Dict[str, Any] = {
+            "files": [],
+            "journalctl_available": True,
+        }
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("FOUND|"):
+                parts = line_s.split("|")
+                if len(parts) >= 3:
+                    result["files"].append({
+                        "path": parts[1],
+                        "size": parts[2],
+                    })
+            elif "journalctl:unavailable" in line_s:
+                result["journalctl_available"] = False
+        return result
 
 

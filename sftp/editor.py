@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.fonts import mono_font
 from admin_suite.sftp.models import SftpAction, SftpTask
 from admin_suite.sftp.worker import SftpWorker
 
@@ -55,7 +56,7 @@ class CodeEditor(QPlainTextEdit):
         self.cursorPositionChanged.connect(self._highlight_line)
         self._update_ln_width(0)
         self._highlight_line()
-        self.setFont(QFont("JetBrains Mono, Consolas, Menlo", 11))
+        self.setFont(mono_font(11))
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
     # -- geometry ---------------------------------------------------------

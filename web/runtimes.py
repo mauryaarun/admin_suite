@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
 
 
 class RuntimesManagerWidget(QWidget):
@@ -143,7 +144,7 @@ class RuntimesManagerWidget(QWidget):
         self.log_viewer = QPlainTextEdit()
         self.log_viewer.setReadOnly(True)
         self.log_viewer.setMaximumHeight(130)
-        self.log_viewer.setFont(QFont("JetBrains Mono, Consolas", 9))
+        self.log_viewer.setFont(mono_font(9))
         self.log_viewer.setPlaceholderText("Runtime command and process logs...")
         ReportExporter.attach_export_context_menu(self.log_viewer)
         layout.addWidget(self.log_viewer)

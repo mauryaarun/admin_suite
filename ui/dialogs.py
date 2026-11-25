@@ -4,14 +4,16 @@ Main UI dialogs.
 
 from __future__ import annotations
 
+import datetime
 import getpass
 import os
 import re
 import socket
 import subprocess
+from typing import Optional
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import (QFont, QColor,)
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,6 +21,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -38,7 +41,14 @@ from PyQt6.QtWidgets import (
     QHeaderView
 )
 
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.core.paths import LOG_DIR, SNIPPETS_FILE
+from admin_suite.core.settings_backup import (
+    export_settings_archive,
+    import_settings_archive,
+    inspect_settings_archive,
+)
 from admin_suite.core.utils import read_json, write_json_secure
 
 try:
@@ -103,15 +113,16 @@ class SudoCredentialsDialog(QDialog):
             self.pass_in.setText(current_password)
         pass_row.addWidget(self.pass_in, 1)
 
-        toggle_eye = QPushButton("👁️")
-        toggle_eye.setToolTip("Show / Hide password")
-        toggle_eye.setFixedWidth(36)
+        toggle_eye = QPushButton()
+        style_icon_button(toggle_eye, "eye", "Show / Hide password", icon_only=True)
 
         def _toggle_pw():
             if self.pass_in.echoMode() == QLineEdit.EchoMode.Password:
                 self.pass_in.setEchoMode(QLineEdit.EchoMode.Normal)
+                toggle_eye.setIcon(get_icon("eye_off", size=20))
             else:
                 self.pass_in.setEchoMode(QLineEdit.EchoMode.Password)
+                toggle_eye.setIcon(get_icon("eye", size=20))
 
         toggle_eye.clicked.connect(_toggle_pw)
         pass_row.addWidget(toggle_eye)
@@ -126,7 +137,9 @@ class SudoCredentialsDialog(QDialog):
         layout.addWidget(self.save_profile_chk)
 
         btn_row = QHBoxLayout()
-        skip_btn = QPushButton("⏩ Passwordless (NOPASSWD)")
+        skip_btn = QPushButton("Passwordless (NOPASSWD)")
+        skip_btn.setIcon(get_icon("key", size=20))
+        skip_btn.setIconSize(QSize(20, 20))
         skip_btn.setToolTip("Proceed without password if sudo NOPASSWD is configured")
         skip_btn.clicked.connect(self._on_skip)
         btn_row.addWidget(skip_btn)
@@ -137,7 +150,9 @@ class SudoCredentialsDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
-        ok_btn = QPushButton("✅ Authenticate")
+        ok_btn = QPushButton("Authenticate")
+        ok_btn.setIcon(get_icon("check", color="#ffffff", size=20))
+        ok_btn.setIconSize(QSize(20, 20))
         ok_btn.setDefault(True)
         ok_btn.setStyleSheet(f"font-weight:bold; background:{accent}; color:#fff; padding:6px 14px;")
         ok_btn.clicked.connect(self._on_ok)
@@ -900,10 +915,28 @@ class ConnectionManagerDialog(QDialog):
 
         layout.addWidget(self.tabs)
 
+        btn_row = QHBoxLayout()
+        backup_btn = QPushButton("🔐 Backup / Restore Settings...")
+        backup_btn.clicked.connect(self._open_backup_dialog)
+        btn_row.addWidget(backup_btn)
+        btn_row.addStretch()
+
         save = QPushButton("💾 Save All Settings")
         save.clicked.connect(self.save)
+        btn_row.addWidget(save)
 
-        layout.addWidget(save)
+        layout.addLayout(btn_row)
+
+    def _open_backup_dialog(self) -> None:
+        parent = self.parent()
+        on_imported = getattr(parent, "_on_settings_imported", None)
+        dlg = SettingsBackupDialog(
+            self,
+            self.services,
+            initial_mode="export",
+            on_imported=on_imported,
+        )
+        dlg.exec()
 
     def _browse_sqlite(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -978,18 +1011,22 @@ class ThemeDialog(QDialog):
 
         self.list = QListWidget()
 
-        current_theme = self.services.config.get("ui_theme", "Breeze Dark")
+        current_theme = self.services.config.get("ui_theme", "System")
 
-        for name, theme in self.services.theme.themes.items():
-            item = QListWidgetItem(name)
+        for name in self.services.theme.themes.keys():
+            theme = self.services.theme.get_theme(name)
+            display_name = f"{name} (Auto)" if name == "System" else name
+            item = QListWidgetItem(display_name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
 
-            item.setBackground(QColor(theme["panel"]))
-            item.setForeground(QColor(theme["text"]))
-
-            if name == current_theme:
-                item.setSelected(True)
+            item.setBackground(QColor(theme.get("panel", "#232629")))
+            item.setForeground(QColor(theme.get("text", "#eff0f1")))
 
             self.list.addItem(item)
+
+            if name == current_theme or (not current_theme and name == "System"):
+                item.setSelected(True)
+                self.list.setCurrentItem(item)
 
         self.list.itemDoubleClicked.connect(lambda: self.accept())
 
@@ -1002,7 +1039,13 @@ class ThemeDialog(QDialog):
 
     def chosen(self):
         item = self.list.currentItem()
-        return item.text() if item else None
+        if not item:
+            selected = self.list.selectedItems()
+            if selected:
+                item = selected[0]
+        if item:
+            return item.data(Qt.ItemDataRole.UserRole) or item.text()
+        return None
 
 
 # ------------------------------------------------------------
@@ -1168,13 +1211,14 @@ class SessionLogViewerDialog(QDialog):
 
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
-        self.view.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.view.setFont(mono_font(10))
 
         right.addWidget(self.view)
 
         row = QHBoxLayout()
 
-        open_folder = QPushButton("📂 Open Folder")
+        open_folder = QPushButton()
+        style_icon_button(open_folder, "folder_open", "Open session logs folder", size=20, icon_only=True)
         open_folder.clicked.connect(self.open_folder)
 
         row.addStretch()
@@ -1251,7 +1295,7 @@ class SnippetDialog(QDialog):
         self.desc_input = QLineEdit(snippet.get("description", ""))
 
         self.cmd_input = QTextEdit(snippet.get("command", ""))
-        self.cmd_input.setFont(QFont("JetBrains Mono, Consolas", 11))
+        self.cmd_input.setFont(mono_font(11))
         self.cmd_input.setMaximumHeight(130)
 
         layout.addRow("Name:", self.name_input)
@@ -1356,13 +1400,16 @@ class SnippetManagerDialog(QDialog):
 
         toolbar = QHBoxLayout()
 
-        add = QPushButton("➕ Add")
+        add = QPushButton()
+        style_icon_button(add, "plus", "Add Snippet", icon_only=True)
         add.clicked.connect(self.add)
 
-        edit = QPushButton("✏️ Edit")
+        edit = QPushButton()
+        style_icon_button(edit, "edit", "Edit Selected Snippet", icon_only=True)
         edit.clicked.connect(self.edit)
 
-        delete = QPushButton("🗑 Delete")
+        delete = QPushButton()
+        style_icon_button(delete, "trash", "Delete Selected Snippet", icon_only=True)
         delete.clicked.connect(self.delete)
 
         toolbar.addWidget(add)
@@ -1370,7 +1417,8 @@ class SnippetManagerDialog(QDialog):
         toolbar.addWidget(delete)
         toolbar.addStretch()
 
-        run = QPushButton("▶ Run in active terminal")
+        run = QPushButton()
+        style_icon_button(run, "play", "Run snippet in active terminal", icon_only=True, color="#22c55e")
         run.clicked.connect(self.run_selected)
 
         toolbar.addWidget(run)
@@ -1556,3 +1604,367 @@ class SnippetManagerDialog(QDialog):
             self.parent().run_snippet_in_terminal(cmd)
 
             self.accept()
+
+
+# ------------------------------------------------------------
+# Encrypted Settings Backup & Restore
+# ------------------------------------------------------------
+
+
+class SettingsBackupWorker(QThread):
+    """Run encrypted ZIP settings export/import off the UI thread."""
+
+    completed = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        mode: str,
+        archive_path: str,
+        password: str,
+        services,
+        options: Optional[dict] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.mode = mode
+        self.archive_path = archive_path
+        self.password = password
+        self.services = services
+        self.options = dict(options or {})
+
+    def run(self) -> None:
+        try:
+            if self.mode == "export":
+                manifest = export_settings_archive(
+                    self.archive_path,
+                    self.password,
+                    self.services,
+                    include_config=bool(self.options.get("include_config", True)),
+                    include_profiles=bool(self.options.get("include_profiles", True)),
+                    include_extras=bool(self.options.get("include_extras", True)),
+                    include_secrets=bool(self.options.get("include_secrets", True)),
+                )
+                self.completed.emit(manifest)
+            elif self.mode == "import":
+                summary = import_settings_archive(
+                    self.archive_path,
+                    self.password,
+                    self.services,
+                    merge=bool(self.options.get("merge", True)),
+                    restore_secrets=bool(self.options.get("restore_secrets", True)),
+                )
+                self.completed.emit(summary)
+            else:
+                raise ValueError(f"Unsupported backup mode: {self.mode}")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class SettingsBackupDialog(QDialog):
+    """Dialog for exporting and importing encrypted ZIP backups of all Admin Suite settings."""
+
+    def __init__(
+        self,
+        parent,
+        services,
+        *,
+        initial_mode: str = "export",
+        on_imported=None,
+    ):
+        super().__init__(parent)
+        self.services = services
+        self._on_imported = on_imported
+        self._worker: Optional[SettingsBackupWorker] = None
+
+        self.setWindowTitle("Encrypted Settings Backup & Restore")
+        self.setMinimumWidth(540)
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "Back up or restore all SSH profiles, Database profiles, VPN profiles, "
+            "global settings, snippets, history, and keyring credentials inside a "
+            "password-encrypted ZIP archive (PBKDF2-HMAC-SHA256 + Fernet)."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self.tabs = QTabWidget()
+        self._build_export_tab()
+        self._build_import_tab()
+        layout.addWidget(self.tabs)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.reject)
+        close_row.addWidget(self.close_btn)
+        layout.addLayout(close_row)
+
+        if str(initial_mode).lower() == "import":
+            self.tabs.setCurrentIndex(1)
+
+    def _build_export_tab(self) -> None:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+
+        form = QFormLayout()
+
+        default_name = (
+            f"admin_suite_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        )
+        default_path = os.path.join(os.path.expanduser("~"), default_name)
+
+        path_row = QHBoxLayout()
+        self.export_path_in = QLineEdit(default_path)
+        exp_browse = QPushButton("Browse...")
+        exp_browse.clicked.connect(self._browse_export_path)
+        path_row.addWidget(self.export_path_in, 1)
+        path_row.addWidget(exp_browse)
+        form.addRow("Backup ZIP File:", path_row)
+
+        self.export_pw_in = QLineEdit()
+        self.export_pw_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.export_pw_in.setPlaceholderText("Enter encryption password")
+        form.addRow("Password:", self.export_pw_in)
+
+        self.export_pw2_in = QLineEdit()
+        self.export_pw2_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.export_pw2_in.setPlaceholderText("Confirm encryption password")
+        form.addRow("Confirm Password:", self.export_pw2_in)
+
+        lay.addLayout(form)
+
+        grp = QGroupBox("Sections to Include")
+        grp_lay = QVBoxLayout(grp)
+        self.chk_config = QCheckBox("Global Configurations (theme, defaults, paths)")
+        self.chk_config.setChecked(True)
+        self.chk_profiles = QCheckBox("Server, Database & VPN Profiles")
+        self.chk_profiles.setChecked(True)
+        self.chk_extras = QCheckBox(
+            "Snippets, Query/Ansible History, Favorites & Known Hosts"
+        )
+        self.chk_extras.setChecked(True)
+        self.chk_secrets = QCheckBox("Stored Passwords & Keyring Credentials")
+        self.chk_secrets.setChecked(True)
+
+        for chk in (
+            self.chk_config,
+            self.chk_profiles,
+            self.chk_extras,
+            self.chk_secrets,
+        ):
+            grp_lay.addWidget(chk)
+        lay.addWidget(grp)
+
+        act_row = QHBoxLayout()
+        act_row.addStretch()
+        self.export_btn = QPushButton("🔒 Export Encrypted Backup")
+        self.export_btn.clicked.connect(self._start_export)
+        act_row.addWidget(self.export_btn)
+        lay.addLayout(act_row)
+
+        self.tabs.addTab(tab, "Export Backup")
+
+    def _build_import_tab(self) -> None:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+
+        form = QFormLayout()
+
+        path_row = QHBoxLayout()
+        self.import_path_in = QLineEdit()
+        self.import_path_in.setPlaceholderText("Select an encrypted Admin Suite backup (.zip)")
+        imp_browse = QPushButton("Browse...")
+        imp_browse.clicked.connect(self._browse_import_path)
+        path_row.addWidget(self.import_path_in, 1)
+        path_row.addWidget(imp_browse)
+        form.addRow("Backup ZIP File:", path_row)
+
+        self.import_pw_in = QLineEdit()
+        self.import_pw_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.import_pw_in.setPlaceholderText("Enter backup decryption password")
+        form.addRow("Password:", self.import_pw_in)
+
+        self.import_mode_combo = QComboBox()
+        self.import_mode_combo.addItem("Merge with existing profiles & config", True)
+        self.import_mode_combo.addItem("Replace existing profiles & config", False)
+        form.addRow("Conflict Mode:", self.import_mode_combo)
+
+        self.chk_restore_secrets = QCheckBox(
+            "Restore passwords & credentials into system keyring"
+        )
+        self.chk_restore_secrets.setChecked(True)
+        form.addRow("", self.chk_restore_secrets)
+
+        lay.addLayout(form)
+
+        self.manifest_label = QLabel("Select a backup archive to preview its contents.")
+        self.manifest_label.setWordWrap(True)
+        lay.addWidget(self.manifest_label)
+
+        act_row = QHBoxLayout()
+        act_row.addStretch()
+        self.import_btn = QPushButton("📦 Import Backup")
+        self.import_btn.clicked.connect(self._start_import)
+        act_row.addWidget(self.import_btn)
+        lay.addLayout(act_row)
+
+        self.tabs.addTab(tab, "Import Backup")
+
+    def _browse_export_path(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Encrypted Settings Backup",
+            self.export_path_in.text().strip() or "admin_suite_backup.zip",
+            "Encrypted Backup ZIP (*.zip *.asbak.zip);;All Files (*)",
+        )
+        if path:
+            if not path.lower().endswith(".zip"):
+                path += ".zip"
+            self.export_path_in.setText(path)
+
+    def _browse_import_path(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Encrypted Settings Backup",
+            os.path.expanduser("~"),
+            "Encrypted Backup ZIP (*.zip *.asbak.zip);;All Files (*)",
+        )
+        if not path:
+            return
+        self.import_path_in.setText(path)
+        self._inspect_selected_archive(path)
+
+    def _inspect_selected_archive(self, path: str) -> None:
+        try:
+            manifest = inspect_settings_archive(path)
+            sections = ", ".join(manifest.get("sections", [])) or "none"
+            counts = manifest.get("counts", {})
+            detail = ", ".join(f"{k}: {v}" for k, v in counts.items())
+            self.manifest_label.setText(
+                f"Valid backup ({manifest.get('created_at', '')})\n"
+                f"Sections: {sections}"
+                + (f"\nItems: {detail}" if detail else "")
+            )
+        except Exception as exc:
+            self.manifest_label.setText(f"Could not inspect archive: {exc}")
+
+    def _set_busy(self, busy: bool, msg: str = "") -> None:
+        self.export_btn.setEnabled(not busy)
+        self.import_btn.setEnabled(not busy)
+        self.close_btn.setEnabled(not busy)
+        self.status_label.setText(msg)
+
+    def _start_export(self) -> None:
+        path = self.export_path_in.text().strip()
+        pw = self.export_pw_in.text()
+        pw2 = self.export_pw2_in.text()
+
+        if not path:
+            QMessageBox.warning(self, "Validation", "Please choose a destination archive path.")
+            return
+        if not pw:
+            QMessageBox.warning(self, "Validation", "An encryption password is required.")
+            return
+        if pw != pw2:
+            QMessageBox.warning(self, "Validation", "Passwords do not match.")
+            return
+
+        opts = {
+            "include_config": self.chk_config.isChecked(),
+            "include_profiles": self.chk_profiles.isChecked(),
+            "include_extras": self.chk_extras.isChecked(),
+            "include_secrets": self.chk_secrets.isChecked(),
+        }
+        if not any(opts.values()):
+            QMessageBox.warning(self, "Validation", "Select at least one section to export.")
+            return
+
+        self._run_worker("export", path, pw, opts, "Exporting encrypted settings...")
+
+    def _start_import(self) -> None:
+        path = self.import_path_in.text().strip()
+        pw = self.import_pw_in.text()
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "Validation", "Select a valid backup ZIP file.")
+            return
+        if not pw:
+            QMessageBox.warning(self, "Validation", "Enter the archive decryption password.")
+            return
+
+        opts = {
+            "merge": bool(self.import_mode_combo.currentData()),
+            "restore_secrets": self.chk_restore_secrets.isChecked(),
+        }
+        self._run_worker("import", path, pw, opts, "Decrypting & restoring settings...")
+
+    def _run_worker(
+        self, mode: str, path: str, password: str, options: dict, status_msg: str
+    ) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+
+        self._set_busy(True, status_msg)
+        self._worker = SettingsBackupWorker(
+            mode, path, password, self.services, options, parent=self
+        )
+
+        tasks = getattr(self.services, "tasks", None)
+        task = (
+            tasks.start_task(
+                title=(
+                    "Export Encrypted Settings"
+                    if mode == "export"
+                    else "Import Encrypted Settings"
+                ),
+                description=os.path.basename(path),
+                category="Settings",
+                progress=-1,
+            )
+            if tasks is not None
+            else None
+        )
+
+        def _done(result: dict) -> None:
+            self._set_busy(False, "")
+            if task is not None and tasks is not None:
+                tasks.finish_task(task.id)
+
+            if mode == "export":
+                msg = f"Encrypted settings exported to {path}"
+                self.services.notifications.push("ok", "Settings Backup", msg)
+                self.services.audit("SETTINGS_BACKUP", msg)
+                QMessageBox.information(self, "Backup Complete", msg)
+                self.accept()
+            else:
+                restored = ", ".join(result.get("sections", [])) or "settings"
+                msg = f"Restored sections: {restored}"
+                self.services.notifications.push("ok", "Settings Restored", msg)
+                self.services.audit("SETTINGS_RESTORE", msg)
+                if callable(self._on_imported):
+                    self._on_imported(result)
+                QMessageBox.information(self, "Restore Complete", msg)
+                self.accept()
+
+        def _fail(err: str) -> None:
+            self._set_busy(False, f"Error: {err}")
+            if task is not None and tasks is not None:
+                tasks.finish_task(task.id, error=err)
+            self.services.notifications.push("error", "Settings Backup Failed", err)
+            QMessageBox.critical(self, "Backup Error", err)
+
+        self._worker.completed.connect(_done)
+        self._worker.failed.connect(_fail)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.start()
+
+    def closeEvent(self, event) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(1500)
+        super().closeEvent(event)

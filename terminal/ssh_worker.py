@@ -59,6 +59,8 @@ class SshTerminalWorker(QThread):
         jump_creds: Optional[SshCredentials] = None,
         session_log_path: Optional[str | Path] = None,
         strict_host_keys: bool = False,
+        cols: int = 80,
+        rows: int = 24,
     ):
         super().__init__()
 
@@ -87,6 +89,8 @@ class SshTerminalWorker(QThread):
 
         self.session_log_path = session_log_path
         self.strict_host_keys = bool(strict_host_keys)
+        self._cols = max(1, int(cols))
+        self._rows = max(1, int(rows))
 
         self.running = True
 
@@ -143,15 +147,26 @@ class SshTerminalWorker(QThread):
 
             self.connection_status.emit("connected")
 
+            with self._lock:
+                cols, rows = self._cols, self._rows
+
             self.channel = self.client.invoke_shell(
                 term="xterm-256color",
-                width=100,
-                height=28,
+                width=cols,
+                height=rows,
             )
+
+            with self._lock:
+                latest_cols, latest_rows = self._cols, self._rows
+            if (latest_cols, latest_rows) != (cols, rows):
+                try:
+                    self.channel.resize_pty(width=latest_cols, height=latest_rows)
+                except Exception:
+                    pass
 
             if self.initial_cmd:
                 time.sleep(0.35)
-                self.channel.send(self.initial_cmd + "\n")
+                self.channel.sendall((self.initial_cmd + "\n").encode("utf-8"))
 
             threading.Thread(target=self._latency_loop, daemon=True).start()
 
@@ -162,7 +177,7 @@ class SshTerminalWorker(QThread):
                 with self._lock:
                     if self._pending:
                         try:
-                            self.channel.send(self._pending.encode("utf-8"))
+                            self.channel.sendall(self._pending.encode("utf-8"))
 
                             if self._log_file:
                                 self._log_file.write(self._pending)
@@ -298,13 +313,20 @@ class SshTerminalWorker(QThread):
         """
         Resize remote PTY.
         """
-        if not self.channel:
+        cols = max(1, int(cols))
+        rows = max(1, int(rows))
+        with self._lock:
+            self._cols = cols
+            self._rows = rows
+            chan = self.channel
+
+        if not chan:
             return
 
         try:
-            self.channel.resize_pty(
-                width=int(cols),
-                height=int(rows),
+            chan.resize_pty(
+                width=cols,
+                height=rows,
             )
         except Exception:
             pass

@@ -4,24 +4,27 @@ Main application window.
 
 from __future__ import annotations
 
-import datetime
 import json
 import os
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QIcon,
     QKeySequence,
+    QPainter,
     QShortcut,
     QTextCursor,
 )
 
 
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -34,9 +37,11 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QSplitterHandle,
     QTabBar,
     QTabWidget,
     QTextEdit,
@@ -48,6 +53,8 @@ from PyQt6.QtWidgets import (
 )
 
 
+
+from admin_suite.core.icons import get_icon, style_icon_button
 
 from admin_suite.core.paths import (
     DB_PROFILES_FILE,
@@ -100,11 +107,46 @@ from admin_suite.ui.dialogs import (
     KeyManagerDialog,
     ProfileDialog,
     SessionLogViewerDialog,
+    SettingsBackupDialog,
     SnippetManagerDialog,
     ThemeDialog,
 )
 from admin_suite.ui.workspace import WorkspaceManager
 from admin_suite.ui.task_drawer import TaskStatusBarWidget, TaskDrawerDialog
+
+
+class _MainSidebarSplitterHandle(QSplitterHandle):
+    """Horizontal splitter handle with hover highlight, grip cursor, and double-click collapse/expand."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter):
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.CursorShape.SplitHCursor)
+
+    def mouseDoubleClickEvent(self, event):
+        splitter = self.splitter()
+        if splitter:
+            mw = splitter.window()
+            if self == splitter.handle(1) and hasattr(mw, "toggle_sidebar"):
+                mw.toggle_sidebar()
+                event.accept()
+                return
+            elif self == splitter.handle(2) and hasattr(mw, "toggle_right_sidebar"):
+                mw.toggle_right_sidebar()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+
+class _MainSidebarSplitter(QSplitter):
+    """Horizontal splitter supporting custom handles and double-click collapse."""
+
+    def __init__(self, orientation: Qt.Orientation = Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.setHandleWidth(7)
+        self.setChildrenCollapsible(True)
+
+    def createHandle(self) -> QSplitterHandle:
+        return _MainSidebarSplitterHandle(self.orientation(), self)
 
 
 def parse_ssh_config(path: str) -> list[dict[str, Any]]:
@@ -247,18 +289,20 @@ class MainWindow(QMainWindow):
             sidebar_visible = True
             sidebar_width = self._settings.value("sidebar/width", 280, type=int)
 
-            self._sidebar_width = sidebar_width if (200 <= sidebar_width <= 500) else 280
+            self._sidebar_width = sidebar_width if sidebar_width >= 160 else 280
             self.sidebar.setVisible(True)
-            self.sidebar.setMinimumWidth(200)
-            self.sidebar.setMaximumWidth(520)
+            self.sidebar.setMinimumWidth(160)
+            self.sidebar.setMaximumWidth(16777215)
             self.main_splitter.setCollapsible(0, False)
 
             copilot_visible = self._settings.value("copilot/visible", False, type=bool)
-            copilot_width = self._settings.value("copilot/width", 340, type=int)
-            self._copilot_width = copilot_width if (240 <= copilot_width <= 500) else 340
+            copilot_width = self._settings.value("copilot/width", 360, type=int)
+            self._copilot_width = copilot_width if copilot_width >= 200 else 360
 
             if hasattr(self, "right_sidebar"):
                 self.right_sidebar.setVisible(copilot_visible)
+                self.right_sidebar.setMinimumWidth(200 if copilot_visible else 0)
+                self.right_sidebar.setMaximumWidth(16777215)
 
             self._update_left_sidebar_btn_styles(True)
             self._update_right_sidebar_btn_styles()
@@ -285,7 +329,7 @@ class MainWindow(QMainWindow):
         # Sidebar.
         self.sidebar = QWidget()
         self.sidebar.setMinimumWidth(0)
-        self.sidebar.setMaximumWidth(560)
+        self.sidebar.setMaximumWidth(16777215)
 
         self._sidebar_width = 280
 
@@ -298,19 +342,12 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        header = QLabel("  🛠 ADMIN SUITE v5")
-        header.setFixedHeight(46)
-        header.setStyleSheet(
-            f"background:{theme['win']};"
-            f"color:{theme['accent']};"
-            "font-size:15px;font-weight:bold;padding:10px 12px;letter-spacing:1px;"
-        )
-
-        sidebar_layout.addWidget(header)
-
         self.sidebar_tabs = QTabWidget()
         self.sidebar_tabs.setDocumentMode(True)
         self.sidebar_tabs.setUsesScrollButtons(True)
+        self.sidebar_tabs.setIconSize(QSize(16, 16))
+
+        icon_color = theme.get("text", "#eff0f1")
 
         # Profiles tab.
         profiles_tab = QWidget()
@@ -319,7 +356,7 @@ class MainWindow(QMainWindow):
         profiles_layout.setSpacing(4)
 
         self.profile_filter = QLineEdit()
-        self.profile_filter.setPlaceholderText("🔍 Filter profiles / tags...")
+        self.profile_filter.setPlaceholderText("Filter profiles / tags...")
         self.profile_filter.textChanged.connect(self.refresh_profile_tree)
 
         self.profile_tree = QTreeWidget()
@@ -339,20 +376,25 @@ class MainWindow(QMainWindow):
 
         profile_button_bar = QHBoxLayout()
         profile_button_bar.setContentsMargins(0, 0, 0, 0)
-        profile_button_bar.setSpacing(2)
+        profile_button_bar.setSpacing(4)
 
-        for text, tooltip, callback in (
-            ("➕", "Add profile", self.add_profile),
-            ("📋", "Duplicate profile", self.duplicate_profile),
-            ("✏️", "Edit profile", self.edit_profile),
-            ("🗑️", "Delete profile", self.delete_profile),
-            ("📡", "Ping all hosts", self._ping_all_profiles),
+        for icon_name, tooltip, callback in (
+            ("plus", "Add SSH profile", self.add_profile),
+            ("copy", "Duplicate SSH profile", self.duplicate_profile),
+            ("edit", "Edit SSH profile", self.edit_profile),
+            ("trash", "Delete SSH profile", self.delete_profile),
+            ("wifi", "Ping all hosts", self._ping_all_profiles),
         ):
-            button = QPushButton(text)
-            button.setToolTip(tooltip)
-            button.setFixedWidth(34)
+            button = QPushButton()
+            style_icon_button(
+                button,
+                icon_name,
+                tooltip=tooltip,
+                color=icon_color,
+                min_width=36,
+                min_height=32,
+            )
             button.clicked.connect(callback)
-
             profile_button_bar.addWidget(button)
 
         profiles_layout.addLayout(profile_button_bar)
@@ -364,7 +406,7 @@ class MainWindow(QMainWindow):
         db_layout.setSpacing(4)
 
         self.db_filter = QLineEdit()
-        self.db_filter.setPlaceholderText("🔍 Filter DB profiles / hosts...")
+        self.db_filter.setPlaceholderText("Filter DB profiles / hosts...")
         self.db_filter.textChanged.connect(self.refresh_db_list)
         db_layout.addWidget(self.db_filter)
 
@@ -381,19 +423,24 @@ class MainWindow(QMainWindow):
 
         db_button_bar = QHBoxLayout()
         db_button_bar.setContentsMargins(0, 0, 0, 0)
-        db_button_bar.setSpacing(2)
+        db_button_bar.setSpacing(4)
 
-        for text, tooltip, callback in (
-            ("➕", "Add DB profile", self.add_db_profile),
-            ("📋", "Duplicate DB profile", self.duplicate_db_profile),
-            ("✏️", "Edit DB profile", self.edit_db_profile),
-            ("🗑️", "Delete DB profile", self.delete_db_profile),
+        for icon_name, tooltip, callback in (
+            ("plus", "Add DB profile", self.add_db_profile),
+            ("copy", "Duplicate DB profile", self.duplicate_db_profile),
+            ("edit", "Edit DB profile", self.edit_db_profile),
+            ("trash", "Delete DB profile", self.delete_db_profile),
         ):
-            button = QPushButton(text)
-            button.setToolTip(tooltip)
-            button.setFixedWidth(34)
+            button = QPushButton()
+            style_icon_button(
+                button,
+                icon_name,
+                tooltip=tooltip,
+                color=icon_color,
+                min_width=36,
+                min_height=32,
+            )
             button.clicked.connect(callback)
-
             db_button_bar.addWidget(button)
 
         db_layout.addLayout(db_button_bar)
@@ -413,31 +460,33 @@ class MainWindow(QMainWindow):
         tools = QWidget()
         tools_layout = QVBoxLayout(tools)
         tools_layout.setContentsMargins(4, 4, 4, 4)
-        tools_layout.setSpacing(2)
+        tools_layout.setSpacing(3)
 
         tool_buttons = [
-            ("🏠 Welcome Screen", self.open_welcome_tab),
-            ("🗄️ Database Manager", self.open_db_manager),
-            ("📋 Event Logs", self.toggle_event_logs),
-            ("⚡ Local Shell", lambda: self.add_local_command_tab("bash", "Local Shell")),
-            ("🔍 VAPT & Web Security Audit", lambda: self.open_vapt_tab()),
-            ("🛡️ Security Hub", self.open_security_hub_selected),
-            ("🔌 Port Forwarding & Tunnels", lambda: self.open_port_forwarding()),
-            ("🌐 Web Hosting Manager", self.open_web_manager_selected),
-            ("🖥 SysAdmin Dashboard", self.open_sysadmin_selected),
-            ("📝 Ansible Multihost", self.open_ansible_tab),
-            ("📜 Ansible Playbook", self.open_ansible_playbook_tab),
-            ("📝 Snippets", self.open_snippets),
-            ("🔑 SSH Key Manager", lambda: KeyManagerDialog(self, self.services).exec()),
-            ("📥 Import ~/.ssh/config", self.import_ssh_config),
-            ("🎬 Session Recordings", lambda: SessionLogViewerDialog(self, self.services).exec()),
-            ("🎨 Themes", self.open_theme_dialog),
-            ("⚙️ Connection Settings", self.open_config),
+            ("home", "Welcome Screen", self.open_welcome_tab),
+            ("database", "Database Manager", self.open_db_manager),
+            ("list", "Event Logs", self.toggle_event_logs),
+            ("terminal", "Local Shell", lambda: self.add_local_command_tab("bash", "Local Shell")),
+            ("radar", "VAPT & Web Security Audit", lambda: self.open_vapt_tab()),
+            ("shield_check", "Security Hub", self.open_security_hub_selected),
+            ("link", "Port Forwarding & Tunnels", lambda: self.open_port_forwarding()),
+            ("globe", "Web Hosting Manager", self.open_web_manager_selected),
+            ("activity", "SysAdmin Dashboard", self.open_sysadmin_selected),
+            ("ansible", "Ansible Multihost", self.open_ansible_tab),
+            ("code", "Ansible Playbook", self.open_ansible_playbook_tab),
+            ("book", "Snippets", self.open_snippets),
+            ("key", "SSH Key Manager", lambda: KeyManagerDialog(self, self.services).exec()),
+            ("upload", "Import ~/.ssh/config", self.import_ssh_config),
+            ("file_text", "Session Recordings", lambda: SessionLogViewerDialog(self, self.services).exec()),
+            ("palette", "Themes", self.open_theme_dialog),
+            ("settings", "Global Connection Settings", self.open_config),
         ]
 
-        for label, callback in tool_buttons:
+        for icon_name, label, callback in tool_buttons:
             button = QPushButton(label)
-            button.setStyleSheet("text-align:left;padding:6px 10px;")
+            button.setIcon(get_icon(icon_name, color=icon_color, size=18))
+            button.setIconSize(QSize(18, 18))
+            button.setStyleSheet("text-align:left;padding:7px 10px;")
             button.clicked.connect(callback)
 
             tools_layout.addWidget(button)
@@ -450,10 +499,10 @@ class MainWindow(QMainWindow):
         tools_scroll.setWidget(tools)
 
         # Add sidebar tabs.
-        self.sidebar_tabs.addTab(profiles_tab, "🐚 Profiles")
-        self.sidebar_tabs.addTab(db_tab, "🗄 DBs")
-        self.sidebar_tabs.addTab(recent_tab, "🕒 Recent")
-        self.sidebar_tabs.addTab(tools_scroll, "🧰 Tools")
+        self.sidebar_tabs.addTab(profiles_tab, get_icon("terminal", color=icon_color, size=16), "SSH")
+        self.sidebar_tabs.addTab(db_tab, get_icon("database", color=icon_color, size=16), "DB")
+        self.sidebar_tabs.addTab(recent_tab, get_icon("clock", color=icon_color, size=16), "Recent")
+        self.sidebar_tabs.addTab(tools_scroll, get_icon("sliders", color=icon_color, size=16), "Tools")
 
         sidebar_layout.addWidget(self.sidebar_tabs, 1)
 
@@ -466,6 +515,7 @@ class MainWindow(QMainWindow):
         # Right sidebar container (Copilot + Event Logs tabs)
         self.right_sidebar = QWidget()
         self.right_sidebar.setMinimumWidth(0)
+        self.right_sidebar.setMaximumWidth(16777215)
         self.right_sidebar.setStyleSheet(
             f"background:{theme['panel']};"
             f"border-left:1px solid {theme['border']};"
@@ -477,20 +527,22 @@ class MainWindow(QMainWindow):
         self.right_tabs = QTabWidget()
         self.right_tabs.setDocumentMode(True)
         self.right_tabs.setUsesScrollButtons(True)
+        self.right_tabs.setIconSize(QSize(16, 16))
 
         from admin_suite.ai.assistant_tab import AIAssistantTab
         self.ai_tab = AIAssistantTab(self.services, self)
         self.event_logs_widget = EventLogsWidget(self.services, self)
 
-        self.right_tabs.addTab(self.ai_tab, "🤖 Copilot")
-        self.right_tabs.addTab(self.event_logs_widget, "📋 Event Logs")
+        self.right_tabs.addTab(self.ai_tab, get_icon("sparkles", color=icon_color, size=16), "Copilot")
+        self.right_tabs.addTab(self.event_logs_widget, get_icon("list", color=icon_color, size=16), "Event Logs")
         self.right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
         right_sidebar_layout.addWidget(self.right_tabs, 1)
 
         self._copilot_width = 360
 
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter = _MainSidebarSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setObjectName("main_splitter")
         self.main_splitter.addWidget(self.sidebar)
         self.main_splitter.addWidget(workspace)
         self.main_splitter.addWidget(self.right_sidebar)
@@ -500,6 +552,23 @@ class MainWindow(QMainWindow):
         self.main_splitter.setStretchFactor(2, 0)
         self.main_splitter.setChildrenCollapsible(True)
         self.main_splitter.setSizes([280, 800, 360])
+
+        self.main_splitter.handle(1).setToolTip("Drag to resize left sidebar | Double-click to collapse/expand")
+        self.main_splitter.handle(2).setToolTip("Drag to resize right sidebar | Double-click to collapse/expand")
+        self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+
+        self.main_splitter.setStyleSheet(
+            f"#main_splitter::handle:horizontal {{"
+            f"    background: {theme.get('panel2', '#2a2e32')};"
+            f"    border-left: 1px solid {theme.get('border', '#31363b')};"
+            f"    border-right: 1px solid {theme.get('border', '#31363b')};"
+            f"}}"
+            f"#main_splitter::handle:horizontal:hover {{"
+            f"    background: {theme.get('accent', '#3daee9')};"
+            f"    border-left: 1px solid {theme.get('accent', '#3daee9')};"
+            f"    border-right: 1px solid {theme.get('accent', '#3daee9')};"
+            f"}}"
+        )
 
         main_layout.addWidget(self.main_splitter)
 
@@ -512,44 +581,91 @@ class MainWindow(QMainWindow):
             f"border-bottom:1px solid {theme['border']};"
         )
 
+        self.navbar = navbar
         navbar_layout = QHBoxLayout(navbar)
         navbar_layout.setContentsMargins(8, 4, 8, 4)
         navbar_layout.setSpacing(6)
 
-        self.sidebar_toggle_btn = QPushButton("◀")
-        self.sidebar_toggle_btn.setToolTip("Left Sidebar (Ctrl+B)")
+        self.sidebar_toggle_btn = QPushButton()
+        self.sidebar_toggle_btn.setCheckable(True)
+        style_icon_button(
+            self.sidebar_toggle_btn,
+            "sidebar_left",
+            tooltip="Toggle Left Sidebar (Ctrl+B)",
+            color=icon_color,
+            min_width=36,
+            min_height=32,
+        )
         self.sidebar_toggle_btn.clicked.connect(lambda: self.toggle_sidebar())
 
-        palette_btn = QPushButton("⌘ (Ctrl+K)")
-        palette_btn.clicked.connect(self.open_palette)
+        self.palette_btn = QPushButton()
+        style_icon_button(
+            self.palette_btn,
+            "command",
+            tooltip="Command Palette (Ctrl+K / Ctrl+Shift+P)",
+            color=icon_color,
+            min_width=36,
+            min_height=32,
+        )
+        self.palette_btn.clicked.connect(self.open_palette)
 
-        self.broadcast_btn = QPushButton("📢 ")
-        self.broadcast_btn.setStyleSheet(
-            f"background:{theme['ok']};color:white;padding:6px 12px;"
+        self.broadcast_btn = QPushButton()
+        self.broadcast_btn.setCheckable(True)
+        self.broadcast_btn.setChecked(False)
+        style_icon_button(
+            self.broadcast_btn,
+            "broadcast",
+            tooltip="Broadcast Input to Open Terminals (F8): Off",
+            color=icon_color,
+            min_width=36,
+            min_height=32,
         )
         self.broadcast_btn.clicked.connect(self.toggle_broadcast)
 
-        self.admin_console_btn = QPushButton("🖥️")
-        self.admin_console_btn.setStyleSheet(
-            f"background:{theme.get('accent', '#3daee9')};color:white;padding:6px 12px;font-weight:bold;"
+        self.admin_console_btn = QPushButton()
+        style_icon_button(
+            self.admin_console_btn,
+            "terminal_square",
+            tooltip="Open Admin Console",
+            color=theme.get("accent", "#3daee9"),
+            min_width=36,
+            min_height=32,
         )
-        self.admin_console_btn.setToolTip("Admin Console")
         self.admin_console_btn.clicked.connect(self.open_admin_console_selected)
 
-        self.vpn_btn = QPushButton("⚡VPN")
-        self.vpn_btn.setStyleSheet(
-            f"background:{theme['warn']};color:white;padding:6px 12px;font-weight:bold;"
+        self.vpn_btn = QPushButton()
+        style_icon_button(
+            self.vpn_btn,
+            "vpn",
+            tooltip="Toggle VPN Connection",
+            color=theme.get("warn", "#f39c12"),
+            min_width=36,
+            min_height=32,
         )
         self.vpn_btn.clicked.connect(self.vpn.toggle)
 
-        self.vpn_cfg_btn = QPushButton("⚙")
-        self.vpn_cfg_btn.setToolTip("Configure VPN Profiles & WireGuard Server Setup")
-        self.vpn_cfg_btn.setFixedWidth(28)
+        self.vpn_cfg_btn = QPushButton()
+        style_icon_button(
+            self.vpn_cfg_btn,
+            "settings",
+            tooltip="Configure VPN Profiles & WireGuard Server Setup",
+            color=icon_color,
+            min_width=36,
+            min_height=32,
+        )
         self.vpn_cfg_btn.clicked.connect(lambda: self.open_vpn_config_dialog())
 
         # Single right sidebar toggle button
-        self.right_sidebar_toggle_btn = QPushButton("▶")
-        self.right_sidebar_toggle_btn.setToolTip("Right Sidebar(Ctrl+Shift+A)")
+        self.right_sidebar_toggle_btn = QPushButton()
+        self.right_sidebar_toggle_btn.setCheckable(True)
+        style_icon_button(
+            self.right_sidebar_toggle_btn,
+            "sidebar_right",
+            tooltip="Toggle Right Sidebar (Ctrl+Shift+A)",
+            color=icon_color,
+            min_width=36,
+            min_height=32,
+        )
         self.right_sidebar_toggle_btn.clicked.connect(lambda: self.toggle_right_sidebar())
 
         # Compatibility references
@@ -560,11 +676,11 @@ class MainWindow(QMainWindow):
 
         self.vpn_status = QLabel("● VPN: Unknown")
         self.vpn_status.setStyleSheet(
-            f"color:{theme['sub']};padding:0 8px;"
+            f"color:{theme['sub']};padding:0 8px;font-weight:500;"
         )
 
         navbar_layout.addWidget(self.sidebar_toggle_btn)
-        navbar_layout.addWidget(palette_btn)
+        navbar_layout.addWidget(self.palette_btn)
         navbar_layout.addWidget(self.admin_console_btn)
         navbar_layout.addWidget(self.broadcast_btn)
         navbar_layout.addWidget(self.vpn_btn)
@@ -573,35 +689,30 @@ class MainWindow(QMainWindow):
         navbar_layout.addStretch()
         navbar_layout.addWidget(self.vpn_status)
 
-
-
-        self.bell_btn = QPushButton("🔔 0")
+        self.bell_btn = QPushButton()
+        style_icon_button(
+            self.bell_btn,
+            "bell",
+            tooltip="Notifications (0)",
+            color=icon_color,
+            min_width=36,
+            min_height=32,
+        )
         self.bell_btn.clicked.connect(
             lambda: NotificationCenterDialog(self, self.services).exec()
         )
 
-        self.clock = QLabel("")
-        self.clock.setStyleSheet(f"color:{theme['sub']};padding:0 8px;")
-
         navbar_layout.addWidget(self.bell_btn)
-        navbar_layout.addWidget(self.clock)
 
         navbar_layout.addWidget(self.right_sidebar_toggle_btn)
 
         workspace_layout.addWidget(navbar)
 
-        self._clock_timer = QTimer(self)
-        self._clock_timer.timeout.connect(
-            lambda: self.clock.setText(
-                datetime.datetime.now().strftime("%a %b %d · %H:%M:%S")
-            )
-        )
-        self._clock_timer.start(1000)
-
         # Tabs.
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
+        self.tabs.setIconSize(QSize(16, 16))
         self.tabs.tabCloseRequested.connect(self.close_tab)
 
         self.tabs.setContextMenuPolicy(
@@ -617,7 +728,8 @@ class MainWindow(QMainWindow):
 
         # Welcome screen (Starting tab)
         self.welcome_widget = WelcomeWidget(self.services, self)
-        self.tabs.addTab(self.welcome_widget, "🏠")
+        self.tabs.addTab(self.welcome_widget, get_icon("home", color=icon_color, size=16), "")
+        self.tabs.setTabToolTip(0, "Home / Welcome")
 
         # Database manager (created on-demand, parented to tabs and hidden until opened)
         self.db_manager_widget = DatabaseManagerWidget(self.services, self.tabs)
@@ -637,7 +749,15 @@ class MainWindow(QMainWindow):
 
         # MySQL status button inside DB manager toolbar.
         try:
-            self.mysql_status_btn = QPushButton("📈 MySQL Status")
+            self.mysql_status_btn = QPushButton()
+            style_icon_button(
+                self.mysql_status_btn,
+                "activity",
+                tooltip="MySQL / MariaDB Server Status",
+                color=icon_color,
+                min_width=36,
+                min_height=32,
+            )
             self.mysql_status_btn.clicked.connect(self.open_mysql_status_tab)
 
             toolbar = self.db_manager_widget.layout().itemAt(0).layout()
@@ -655,8 +775,8 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.task_status_widget)
 
         self.statusBar().showMessage(
-            "Ready — double-click a profile · Ctrl+K palette · Ctrl+T terminal · "
-            "Ctrl+Shift+V VAPT audit · F8 broadcast · Ctrl+Shift+T reopen"
+            "Ready — double-click a profile · Shift+Left/Right switch tabs · "
+            "Ctrl+K palette · Ctrl+T terminal · Ctrl+Shift+V VAPT · F8 broadcast"
         )
 
     def _init_shortcuts(self) -> None:
@@ -681,6 +801,96 @@ class MainWindow(QMainWindow):
             shortcut.activated.connect(callback)
 
             self._sc.append(shortcut)
+
+        self._app_filter_installed = False
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            self._app_filter_installed = True
+
+    def _switch_tab_by_delta(self, delta: int) -> None:
+        """Switch main workspace tab sequentially by one step (-1 previous, +1 next)."""
+        if not hasattr(self, "tabs"):
+            return
+        count = self.tabs.count()
+        if count <= 1 or delta == 0:
+            return
+        step = -1 if int(delta) < 0 else 1
+        next_idx = (self.tabs.currentIndex() + step) % count
+        self.tabs.setCurrentIndex(next_idx)
+
+        next_widget = self.tabs.widget(next_idx)
+        if next_widget is not None:
+            if hasattr(next_widget, "focus_terminal") and callable(
+                next_widget.focus_terminal
+            ):
+                next_widget.focus_terminal()
+            else:
+                fw = QApplication.focusWidget()
+                if fw is None or (
+                    fw is not next_widget and not next_widget.isAncestorOf(fw)
+                ):
+                    next_widget.setFocus()
+
+    @staticmethod
+    def _is_text_input_widget(widget: Optional[QWidget]) -> bool:
+        """Return True if widget accepts Shift+Left/Right for text selection."""
+        if widget is None:
+            return False
+        if isinstance(
+            widget,
+            (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox),
+        ):
+            return True
+        if isinstance(widget, QComboBox) and widget.isEditable():
+            return True
+        return False
+
+    @staticmethod
+    def _is_terminal_delegate_widget(widget: Optional[QWidget]) -> bool:
+        """Return True for NativeTerminalWidget and WebEngine views/delegates."""
+        if widget is None:
+            return False
+        from admin_suite.terminal.native_terminal import NativeTerminalWidget
+
+        cur: Any = widget
+        while cur is not None:
+            if isinstance(cur, NativeTerminalWidget):
+                return True
+            if isinstance(cur, QWidget) and cur.inherits("QWebEngineView"):
+                return True
+            cls_name = type(cur).__name__
+            if "WebEngine" in cls_name or "RenderWidgetHost" in cls_name:
+                return True
+            cur = cur.parent()
+        return False
+
+    def eventFilter(self, obj, event):
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.modifiers() == Qt.KeyboardModifier.ShiftModifier
+            and event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right)
+        ):
+            if not isinstance(obj, QWidget):
+                return super().eventFilter(obj, event)
+            target_widget = QApplication.focusWidget() or obj
+            if isinstance(target_widget, QWidget) and target_widget.window() is self:
+                # Never hijack Shift+Left/Right inside text-editing widgets or terminals
+                # (terminals emit tab_switch_requested directly once per keystroke).
+                if (
+                    self._is_text_input_widget(target_widget)
+                    or self._is_text_input_widget(obj)
+                    or self._is_terminal_delegate_widget(target_widget)
+                    or self._is_terminal_delegate_widget(obj)
+                ):
+                    return super().eventFilter(obj, event)
+
+                delta = -1 if event.key() == Qt.Key.Key_Left else 1
+                self._switch_tab_by_delta(delta)
+                event.accept()
+                return True
+
+        return super().eventFilter(obj, event)
 
     def _register_actions(self) -> None:
         """Register primary application actions into the ActionRegistry."""
@@ -769,6 +979,20 @@ class MainWindow(QMainWindow):
             lambda: self.open_sftp(self._get_selected_profile_name()),
             category="Files & SFTP",
             icon="📁",
+        )
+        reg.register_action(
+            "settings.export_backup",
+            "Export Encrypted Settings Backup (.zip)",
+            lambda: self.open_settings_backup("export"),
+            category="Settings",
+            icon="🔒",
+        )
+        reg.register_action(
+            "settings.import_backup",
+            "Import Encrypted Settings Backup (.zip)",
+            lambda: self.open_settings_backup("import"),
+            category="Settings",
+            icon="📦",
         )
         reg.register_action(
             "sysadmin.selected",
@@ -996,6 +1220,16 @@ class MainWindow(QMainWindow):
         act_import = file_menu.addAction("📥 Import ~/.ssh/config")
         act_import.triggered.connect(self.import_ssh_config)
 
+        act_export_settings = file_menu.addAction("🔒 Export Encrypted Settings...")
+        act_export_settings.triggered.connect(
+            lambda: self.open_settings_backup("export")
+        )
+
+        act_import_settings = file_menu.addAction("📦 Import Encrypted Settings...")
+        act_import_settings.triggered.connect(
+            lambda: self.open_settings_backup("import")
+        )
+
         act_logs = file_menu.addAction("🎬 Session Recordings")
         act_logs.triggered.connect(lambda: SessionLogViewerDialog(self, self.services).exec())
 
@@ -1206,6 +1440,7 @@ class MainWindow(QMainWindow):
             "• <b>Ctrl+,</b> — Connection Settings<br>"
             "• <b>F8</b> — Toggle Broadcast Mode<br>"
             "• <b>F11</b> — Toggle Fullscreen<br>"
+            "• <b>Shift+Left / Shift+Right</b> — Switch Open Tabs<br>"
             "• <b>Ctrl+Tab / Ctrl+Shift+Tab</b> — Switch Tabs<br>"
         )
         QMessageBox.information(self, "Keyboard Shortcuts", text)
@@ -1243,9 +1478,13 @@ class MainWindow(QMainWindow):
             self,
         )
 
-        self.bell_btn.setText(
-            f"🔔 {len(self.services.notifications.items)}"
-        )
+        count = len(self.services.notifications.items)
+        theme = self.services.theme.current
+        icon_name = "bell_ring" if count > 0 else "bell"
+        icon_col = theme.get("warn", "#f39c12") if count > 0 else theme.get("text", "#eff0f1")
+        self.bell_btn.setIcon(get_icon(icon_name, color=icon_col, size=20))
+        self.bell_btn.setToolTip(f"Notifications ({count})")
+        self.bell_btn.setAccessibleName(f"Notifications ({count})")
 
     def append_debug(self, text: str) -> None:
         """Compatibility helper to append or emit debug text."""
@@ -1285,19 +1524,22 @@ class MainWindow(QMainWindow):
             self.vpn_btn.setEnabled(False)
 
             if busy_action == "connect":
-                text = "🔁 VPN: Connecting..."
+                tip = "VPN: Connecting..."
                 status = "● VPN: Connecting..."
                 color = theme["warn"]
+                icon_name = "sync"
 
             elif busy_action == "disconnect":
-                text = "🔁 VPN: Disconnecting..."
+                tip = "VPN: Disconnecting..."
                 status = "● VPN: Disconnecting..."
                 color = theme["warn"]
+                icon_name = "sync"
 
             else:
-                text = "🔁 VPN: Checking..."
+                tip = "VPN: Checking..."
                 status = "● VPN: Checking..."
                 color = theme["sub"]
+                icon_name = "vpn"
 
         else:
             self.vpn_btn.setEnabled(True)
@@ -1305,25 +1547,31 @@ class MainWindow(QMainWindow):
             p_name = f" ({prof.get('name')})" if prof else ""
 
             if connected:
-                text = f"🔌 Disconnect{p_name}"
-                status = f"● VPN{p_name}: Connected ✅"
+                tip = f"Disconnect VPN{p_name}"
+                status = f"● VPN{p_name}: Connected"
                 color = theme["ok"]
+                icon_name = "shield_check"
 
             else:
-                text = f"⚡ Connect{p_name}"
+                tip = f"Connect VPN{p_name}"
                 status = f"● VPN{p_name}: Disconnected"
                 color = theme["warn"]
+                icon_name = "vpn"
 
-        self.vpn_btn.setText(text)
-
+        self.vpn_btn.setText("")
+        self.vpn_btn.setIcon(get_icon(icon_name, color=color, size=20))
+        self.vpn_btn.setToolTip(tip)
+        self.vpn_btn.setAccessibleName(tip)
         self.vpn_btn.setStyleSheet(
-            f"background:{color};color:white;padding:6px 12px;font-weight:bold;"
+            f"QPushButton#IconToolBtn {{ border-color:{color}; }}"
+            if connected
+            else ""
         )
 
         self.vpn_status.setText(status)
 
         self.vpn_status.setStyleSheet(
-            f"color:{color};padding:0 8px;"
+            f"color:{color};padding:0 8px;font-weight:500;"
         )
 
     def _apply_polled_vpn_state(self, res: dict) -> None:
@@ -2210,7 +2458,8 @@ class MainWindow(QMainWindow):
 
     def open_db_manager(self) -> DatabaseManagerWidget:
         if self.tabs.indexOf(self.db_manager_widget) == -1:
-            self.tabs.addTab(self.db_manager_widget, "🗄 Database Manager")
+            icon = get_icon("database", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+            self.tabs.addTab(self.db_manager_widget, icon, "Database Manager")
         self.tabs.setCurrentWidget(self.db_manager_widget)
         self.db_manager_widget.show()
         return self.db_manager_widget
@@ -2283,13 +2532,32 @@ class MainWindow(QMainWindow):
     # Terminals
     # ------------------------------------------------------------
 
-    def _connect_terminal(self, terminal) -> None:
+    def _connect_terminal(self, terminal, *, connect_tab_switch: bool = True) -> None:
         try:
             terminal.input_sent.disconnect(self._on_terminal_input)
         except Exception:
             pass
 
         terminal.input_sent.connect(self._on_terminal_input)
+
+        if hasattr(terminal, "tab_switch_requested"):
+            try:
+                terminal.tab_switch_requested.disconnect(self._switch_tab_by_delta)
+            except Exception:
+                pass
+            if connect_tab_switch:
+                terminal.tab_switch_requested.connect(self._switch_tab_by_delta)
+
+        if hasattr(terminal, "terminal_theme_apply_all_requested"):
+            try:
+                terminal.terminal_theme_apply_all_requested.disconnect(
+                    self.apply_theme_to_open_terminals
+                )
+            except Exception:
+                pass
+            terminal.terminal_theme_apply_all_requested.connect(
+                self.apply_theme_to_open_terminals
+            )
 
     def _on_terminal_input(self, data: str) -> None:
         if not self.broadcast_enabled:
@@ -2310,6 +2578,9 @@ class MainWindow(QMainWindow):
             if isinstance(widget, SplitTerminalTab):
                 out.extend(widget.terminals)
 
+            elif hasattr(widget, "ssh_terminal") and widget.ssh_terminal is not None:
+                out.append(widget.ssh_terminal)
+
             elif hasattr(widget, "inject_input"):
                 out.append(widget)
 
@@ -2322,6 +2593,8 @@ class MainWindow(QMainWindow):
             terminals = self.get_all_terminals()
 
             if len(terminals) < 2:
+                if hasattr(self, "broadcast_btn"):
+                    self.broadcast_btn.setChecked(False)
                 QMessageBox.information(
                     self,
                     "Broadcast",
@@ -2335,14 +2608,21 @@ class MainWindow(QMainWindow):
                 f"Everything you type will be sent to ALL {len(terminals)} open terminals.\n"
                 "Enable broadcast?",
             ) != QMessageBox.StandardButton.Yes:
+                if hasattr(self, "broadcast_btn"):
+                    self.broadcast_btn.setChecked(False)
                 return
 
             self.broadcast_enabled = True
 
-            self.broadcast_btn.setText("📢 ON")
-
+            self.broadcast_btn.setChecked(True)
+            self.broadcast_btn.setIcon(
+                get_icon("broadcast", color="#ffffff", size=20)
+            )
+            self.broadcast_btn.setToolTip(
+                "Broadcast Input to Open Terminals (F8): ON — click to disable"
+            )
             self.broadcast_btn.setStyleSheet(
-                f"background:{theme['warn']};color:#1b1e23;font-weight:bold;padding:6px 12px;"
+                f"QPushButton#IconToolBtn {{ background:{theme['warn']}; border-color:{theme['warn']}; }}"
             )
 
             self.services.notifications.push(
@@ -2354,11 +2634,12 @@ class MainWindow(QMainWindow):
         else:
             self.broadcast_enabled = False
 
-            self.broadcast_btn.setText("📢")
-
-            self.broadcast_btn.setStyleSheet(
-                f"background:{theme['ok']};color:white;padding:6px 12px;"
+            self.broadcast_btn.setChecked(False)
+            self.broadcast_btn.setIcon(
+                get_icon("broadcast", color=theme.get("text", "#eff0f1"), size=20)
             )
+            self.broadcast_btn.setToolTip("Broadcast Input to Open Terminals (F8): Off")
+            self.broadcast_btn.setStyleSheet("")
 
             self.services.notifications.push(
                 "info",
@@ -2387,6 +2668,7 @@ class MainWindow(QMainWindow):
         jump_creds: Optional[SshCredentials] = None,
         use_agent: bool = False,
         profile_name: Optional[str] = None,
+        profile_data: Optional[dict[str, Any]] = None,
     ):
         tab = SshTerminalTab(
             self.services,
@@ -2403,11 +2685,13 @@ class MainWindow(QMainWindow):
             jump_creds=jump_creds,
             use_agent=use_agent,
             profile_name=profile_name,
+            profile_data=profile_data,
         )
 
         self._connect_terminal(tab)
 
-        index = self.tabs.addTab(tab, f"🐚 {name}")
+        icon = get_icon("terminal", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, name)
         self.tabs.setCurrentIndex(index)
 
         self.add_recent(profile_name or name)
@@ -2443,13 +2727,36 @@ class MainWindow(QMainWindow):
         self.services.audit("SSH", f"Connecting SSH terminal for '{name}' ({data.get('ssh_user')}@{data.get('ssh_host')}:{data.get('ssh_port', 22)})")
 
         creds = profile_creds(data)
+        use_jump, jump_host, jump_port, jump_user, jump_creds = self._resolve_jump_params(data)
 
+        self.add_terminal_tab(
+            name,
+            data.get("ssh_host", ""),
+            data.get("ssh_port", 22),
+            data.get("ssh_user", ""),
+            creds,
+            initial_cmd=data.get("initial_cmd", ""),
+            use_jump=use_jump,
+            jump_host=jump_host,
+            jump_port=jump_port,
+            jump_user=jump_user,
+            jump_creds=jump_creds,
+            use_agent=data.get("use_agent", False),
+            profile_name=name,
+            profile_data=data,
+        )
+
+    def _resolve_jump_params(
+        self, data: dict
+    ) -> tuple[bool, Optional[str], int, Optional[str], Optional[SshCredentials]]:
+        """Resolve jump-host connection parameters from a profile dictionary."""
         jump_creds = None
         jump_host = data.get("jump_host")
         jump_port = int(data.get("jump_port", 22) or 22)
         jump_user = data.get("jump_user")
+        use_jump = bool(data.get("use_jump"))
 
-        if data.get("use_jump"):
+        if use_jump:
             jump_prof = data.get("jump_profile")
             if jump_prof and jump_prof in self.profiles:
                 jp = self.profiles[jump_prof]
@@ -2469,21 +2776,7 @@ class MainWindow(QMainWindow):
                     key_path=data.get("jump_key_path") or None,
                 )
 
-        self.add_terminal_tab(
-            name,
-            data.get("ssh_host", ""),
-            data.get("ssh_port", 22),
-            data.get("ssh_user", ""),
-            creds,
-            initial_cmd=data.get("initial_cmd", ""),
-            use_jump=data.get("use_jump", False),
-            jump_host=jump_host,
-            jump_port=jump_port,
-            jump_user=jump_user,
-            jump_creds=jump_creds,
-            use_agent=data.get("use_agent", False),
-            profile_name=name,
-        )
+        return use_jump, jump_host, jump_port, jump_user, jump_creds
 
     def add_sftp_tab(
         self,
@@ -2494,6 +2787,13 @@ class MainWindow(QMainWindow):
         creds: SshCredentials,
         *,
         use_agent: bool = False,
+        use_jump: bool = False,
+        jump_host: Optional[str] = None,
+        jump_port: int = 22,
+        jump_user: Optional[str] = None,
+        jump_creds: Optional[SshCredentials] = None,
+        profile_name: Optional[str] = None,
+        profile_data: Optional[dict] = None,
     ):
         self.services.audit("SFTP", f"Opening SFTP session for '{name}' ({user}@{host}:{port})")
         tab = SFTPTab(
@@ -2505,9 +2805,19 @@ class MainWindow(QMainWindow):
             creds=creds,
             name=name,
             use_agent=use_agent,
+            use_jump=use_jump,
+            jump_host=jump_host,
+            jump_port=jump_port,
+            jump_user=jump_user,
+            jump_creds=jump_creds,
+            profile_name=profile_name or name,
+            profile_data=profile_data,
         )
+        if getattr(tab, "ssh_terminal", None) is not None:
+            self._connect_terminal(tab.ssh_terminal)
 
-        index = self.tabs.addTab(tab, f"📁 SFTP: {name}")
+        icon = get_icon("folder_open", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, f"SFTP: {name}")
         self.tabs.setCurrentIndex(index)
 
         return tab
@@ -2523,6 +2833,7 @@ class MainWindow(QMainWindow):
             return
 
         creds = profile_creds(data)
+        use_jump, jump_host, jump_port, jump_user, jump_creds = self._resolve_jump_params(data)
 
         self.add_sftp_tab(
             name,
@@ -2531,6 +2842,13 @@ class MainWindow(QMainWindow):
             data.get("ssh_user", ""),
             creds,
             use_agent=data.get("use_agent", False),
+            use_jump=use_jump,
+            jump_host=jump_host,
+            jump_port=jump_port,
+            jump_user=jump_user,
+            jump_creds=jump_creds,
+            profile_name=name,
+            profile_data=data,
         )
 
     def add_local_command_tab(self, command: str, name: str = "Local"):
@@ -2543,7 +2861,8 @@ class MainWindow(QMainWindow):
 
         self._connect_terminal(tab)
 
-        index = self.tabs.addTab(tab, f"⚡ {name}")
+        icon = get_icon("terminal", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, name)
         self.tabs.setCurrentIndex(index)
 
         return tab
@@ -2552,7 +2871,8 @@ class MainWindow(QMainWindow):
         self.services.emit_log("ANSIBLE", "Opened Ansible Multi-Host runner tab", "INFO")
         tab = AnsibleTab(self.services, self)
 
-        index = self.tabs.addTab(tab, "🚀 Ansible Runner")
+        icon = get_icon("ansible", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, "Ansible Runner")
         self.tabs.setCurrentIndex(index)
 
         return tab
@@ -2561,7 +2881,8 @@ class MainWindow(QMainWindow):
         self.services.emit_log("ANSIBLE", "Opened Ansible Playbook runner tab", "INFO")
         tab = AnsiblePlaybookTab(self.services, self)
 
-        index = self.tabs.addTab(tab, "📜 Ansible Playbook")
+        icon = get_icon("code", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, "Ansible Playbook")
         self.tabs.setCurrentIndex(index)
 
         return tab
@@ -2675,10 +2996,10 @@ class MainWindow(QMainWindow):
         from admin_suite.ui.networking_dialog import NetworkingToolsDialog
         dialog = NetworkingToolsDialog(
             services=self.services,
-            host=data.get("host", "localhost"),
-            port=int(data.get("port", 22)),
-            username=data.get("user", ""),
-            creds=data.get("password") or data.get("key"),
+            host=data.get("ssh_host", data.get("host", "localhost")),
+            port=int(data.get("ssh_port", data.get("port", 22)) or 22),
+            username=data.get("ssh_user", data.get("user", "")),
+            creds=profile_creds(data),
             parent=self,
             profile_data=data,
         )
@@ -2695,27 +3016,29 @@ class MainWindow(QMainWindow):
             )
             return
 
+        return self.open_split_profile(name)
+
+    def open_split_profile(self, name: str):
         data = self.profiles[name]
 
         tab = SplitTerminalTab(self.services, name, data)
+        tab.tab_switch_requested.connect(self._switch_tab_by_delta)
+        tab.terminal_theme_apply_all_requested.connect(
+            self.apply_theme_to_open_terminals
+        )
+        tab.pane_added.connect(
+            lambda terminal: self._connect_terminal(terminal, connect_tab_switch=False)
+        )
 
         for terminal in tab.terminals:
-            self._connect_terminal(terminal)
+            self._connect_terminal(terminal, connect_tab_switch=False)
 
-        original_add_pane = tab.add_pane
-
-        def wrapped_add_pane(orientation):
-            original_add_pane(orientation)
-
-            for terminal in tab.terminals:
-                self._connect_terminal(terminal)
-
-        tab.add_pane = wrapped_add_pane
-
-        index = self.tabs.addTab(tab, f"⧉ {name}")
+        icon = get_icon("split_h", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, name)
         self.tabs.setCurrentIndex(index)
 
         self.add_recent(name)
+        return tab
 
     def _new_terminal_dialog(self):
         name = self._get_selected_profile_name()
@@ -2809,6 +3132,11 @@ class MainWindow(QMainWindow):
 
         if widget is not None:
             try:
+                if hasattr(widget, "stop_all_workers"):
+                    widget.stop_all_workers()
+            except Exception:
+                pass
+            try:
                 widget.close()
             except Exception:
                 pass
@@ -2828,33 +3156,40 @@ class MainWindow(QMainWindow):
 
             self._last_closed = None
 
-    def show_tab_menu(self, pos) -> None:
-        index = self.tabs.tabBar().tabAt(pos)
+    def build_tab_menu(self, index: int) -> Optional[QMenu]:
         if index < 0 or self._is_permanent_tab(self.tabs.widget(index)):
-            return
+            return None
 
-        menu.addAction("🗔 Pop Out to Floating Window").triggered.connect(
+        menu = QMenu(self)
+        icon_color = self.services.theme.current.get("text", "#e2e8f0")
+
+        menu.addAction(get_icon("external_link", color=icon_color, size=16), "Pop Out to Floating Window").triggered.connect(
             lambda: self.workspace_mgr.detach_tab(self.tabs, index)
         )
         menu.addSeparator()
 
-        menu.addAction("✏️ Rename").triggered.connect(
+        menu.addAction(get_icon("edit", color=icon_color, size=16), "Rename").triggered.connect(
             lambda: self._rename_tab(index)
         )
 
-        menu.addAction("❌ Close").triggered.connect(
+        menu.addAction(get_icon("close", color=icon_color, size=16), "Close").triggered.connect(
             lambda: self.close_tab(index)
         )
 
-        menu.addAction("❌ Close Others").triggered.connect(
+        menu.addAction(get_icon("trash", color=icon_color, size=16), "Close Others").triggered.connect(
             lambda: self._close_others(index)
         )
 
-        menu.addAction("❌ Close to the Right").triggered.connect(
+        menu.addAction(get_icon("chevron_right", color=icon_color, size=16), "Close to the Right").triggered.connect(
             lambda: self._close_right(index)
         )
+        return menu
 
-        menu.exec(self.tabs.mapToGlobal(pos))
+    def show_tab_menu(self, pos) -> None:
+        index = self.tabs.tabBar().tabAt(pos)
+        menu = self.build_tab_menu(index)
+        if menu is not None:
+            menu.exec(self.tabs.mapToGlobal(pos))
 
     def _rename_tab(self, index: int):
         name, ok = QInputDialog.getText(
@@ -2884,6 +3219,24 @@ class MainWindow(QMainWindow):
     # Sidebar
     # ------------------------------------------------------------
 
+    def _on_main_splitter_moved(self, pos: int, index: int) -> None:
+        if not hasattr(self, "main_splitter"):
+            return
+        sizes = self.main_splitter.sizes()
+        if len(sizes) == 3:
+            if hasattr(self, "sidebar") and not self.sidebar.isHidden() and sizes[0] >= 100:
+                self._sidebar_width = sizes[0]
+                try:
+                    self._settings.setValue("sidebar/width", sizes[0])
+                except Exception:
+                    pass
+            if hasattr(self, "right_sidebar") and not self.right_sidebar.isHidden() and sizes[2] >= 100:
+                self._copilot_width = sizes[2]
+                try:
+                    self._settings.setValue("copilot/width", sizes[2])
+                except Exception:
+                    pass
+
     def _apply_splitter_layout(self) -> None:
         """
         Synchronizes QSplitter sizes cleanly based on sidebar visibilities.
@@ -2902,10 +3255,10 @@ class MainWindow(QMainWindow):
         # Enforce actual minimum sizes so QSplitter cannot collapse an open widget
         if left_open:
             s_w = getattr(self, "_sidebar_width", 280)
-            if s_w < 200 or s_w > 480:
+            if s_w < 160:
                 s_w = 280
-            self.sidebar.setMinimumWidth(200)
-            self.sidebar.setMaximumWidth(520)
+            self.sidebar.setMinimumWidth(160)
+            self.sidebar.setMaximumWidth(16777215)
             self.main_splitter.setCollapsible(0, False)
         else:
             s_w = 0
@@ -2913,11 +3266,11 @@ class MainWindow(QMainWindow):
             self.main_splitter.setCollapsible(0, True)
 
         if right_open:
-            r_w = getattr(self, "_copilot_width", 340)
-            if r_w < 240 or r_w > 480:
-                r_w = 340
-            self.right_sidebar.setMinimumWidth(240)
-            self.right_sidebar.setMaximumWidth(600)
+            r_w = getattr(self, "_copilot_width", 360)
+            if r_w < 200:
+                r_w = 360
+            self.right_sidebar.setMinimumWidth(200)
+            self.right_sidebar.setMaximumWidth(16777215)
             self.main_splitter.setCollapsible(2, False)
         else:
             r_w = 0
@@ -2925,36 +3278,33 @@ class MainWindow(QMainWindow):
             self.main_splitter.setCollapsible(2, True)
 
         # Distribute remaining width to central workspace
-        w_w = max(total - s_w - r_w, 400)
+        w_w = max(total - s_w - r_w, 200)
 
         # In case total width is cramped, proportionately share space
         needed = s_w + w_w + r_w
-        if needed > total and total > 600:
-            w_w = max(int(total * 0.5), 350)
+        if needed > total and total > 500:
+            w_w = max(int(total * 0.4), 250)
             rem = total - w_w
             if left_open and right_open:
-                s_w = int(rem * 0.45)
-                r_w = rem - s_w
+                s_w = max(int(rem * 0.45), 160)
+                r_w = max(rem - s_w, 200)
             elif left_open:
-                s_w = rem
+                s_w = max(rem, 160)
             elif right_open:
-                r_w = rem
+                r_w = max(rem, 200)
 
         self.main_splitter.setSizes([s_w, w_w, r_w])
 
     def _update_left_sidebar_btn_styles(self, is_open: bool) -> None:
         theme = self.services.theme.current
         if hasattr(self, "sidebar_toggle_btn"):
-            if is_open:
-                self.sidebar_toggle_btn.setText("◀")
-                self.sidebar_toggle_btn.setStyleSheet(
-                    f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
-                )
-            else:
-                self.sidebar_toggle_btn.setText("▶")
-                self.sidebar_toggle_btn.setStyleSheet(
-                    f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
-                )
+            self.sidebar_toggle_btn.setText("")
+            self.sidebar_toggle_btn.setChecked(bool(is_open))
+            color = "#ffffff" if is_open else theme.get("text", "#eff0f1")
+            self.sidebar_toggle_btn.setIcon(get_icon("sidebar_left", color=color, size=20))
+            self.sidebar_toggle_btn.setToolTip(
+                "Hide Left Sidebar (Ctrl+B)" if is_open else "Show Left Sidebar (Ctrl+B)"
+            )
 
     def toggle_sidebar(self, force_visible: Optional[bool] = None) -> None:
         if not hasattr(self, "sidebar"):
@@ -2964,18 +3314,18 @@ class MainWindow(QMainWindow):
         target = not is_open if force_visible is None else bool(force_visible)
 
         if target:
-            w = getattr(self, "_sidebar_width", 260)
-            if w < 200 or w > 480:
-                w = 260
+            w = getattr(self, "_sidebar_width", 280)
+            if w < 160:
+                w = 280
             self._sidebar_width = w
-            self.sidebar.setMinimumWidth(200)
-            self.sidebar.setMaximumWidth(520)
+            self.sidebar.setMinimumWidth(160)
+            self.sidebar.setMaximumWidth(16777215)
             self.sidebar.show()
             self.main_splitter.setCollapsible(0, False)
         else:
             if hasattr(self, "main_splitter"):
                 sizes = self.main_splitter.sizes()
-                if sizes and sizes[0] > 100:
+                if sizes and sizes[0] > 60:
                     self._sidebar_width = sizes[0]
             self.sidebar.setMinimumWidth(0)
             self.sidebar.hide()
@@ -3003,6 +3353,12 @@ class MainWindow(QMainWindow):
     def _show_right_sidebar(self) -> None:
         if not hasattr(self, "right_sidebar"):
             return
+        w = getattr(self, "_copilot_width", 360)
+        if w < 200:
+            w = 360
+        self._copilot_width = w
+        self.right_sidebar.setMinimumWidth(200)
+        self.right_sidebar.setMaximumWidth(16777215)
         self.right_sidebar.show()
         self._apply_splitter_layout()
         try:
@@ -3015,12 +3371,13 @@ class MainWindow(QMainWindow):
             return
         if hasattr(self, "main_splitter"):
             sizes = self.main_splitter.sizes()
-            if len(sizes) == 3 and sizes[2] > 50:
+            if len(sizes) == 3 and sizes[2] > 60:
                 self._copilot_width = sizes[2]
                 try:
                     self._settings.setValue("copilot/width", sizes[2])
                 except Exception:
                     pass
+        self.right_sidebar.setMinimumWidth(0)
         self.right_sidebar.hide()
         self._apply_splitter_layout()
         try:
@@ -3110,16 +3467,13 @@ class MainWindow(QMainWindow):
         is_visible = hasattr(self, "right_sidebar") and not self.right_sidebar.isHidden()
 
         if hasattr(self, "right_sidebar_toggle_btn"):
-            if is_visible:
-                self.right_sidebar_toggle_btn.setText("▶")
-                self.right_sidebar_toggle_btn.setStyleSheet(
-                    f"background:{theme.get('accent', '#3daee9')};color:white;font-weight:bold;padding:4px 10px;border-radius:4px;"
-                )
-            else:
-                self.right_sidebar_toggle_btn.setText("◀")
-                self.right_sidebar_toggle_btn.setStyleSheet(
-                    f"background:{theme.get('panel2', '#222222')};color:{theme.get('text', '#cccccc')};padding:4px 10px;border:1px solid {theme.get('border', '#444444')};border-radius:4px;"
-                )
+            self.right_sidebar_toggle_btn.setText("")
+            self.right_sidebar_toggle_btn.setChecked(bool(is_visible))
+            color = "#ffffff" if is_visible else theme.get("text", "#eff0f1")
+            self.right_sidebar_toggle_btn.setIcon(get_icon("sidebar_right", color=color, size=20))
+            self.right_sidebar_toggle_btn.setToolTip(
+                "Hide Right Sidebar (Ctrl+Shift+A)" if is_visible else "Show Right Sidebar (Ctrl+Shift+A)"
+            )
 
     def _update_copilot_btn_style(self, visible: bool) -> None:
         self._update_right_sidebar_btn_styles()
@@ -3214,6 +3568,73 @@ class MainWindow(QMainWindow):
     def open_config(self):
         ConnectionManagerDialog(self, self.services).exec()
 
+    def open_settings_backup(self, mode: str = "export") -> None:
+        SettingsBackupDialog(
+            self,
+            self.services,
+            initial_mode=mode,
+            on_imported=self._on_settings_imported,
+        ).exec()
+
+    def _on_settings_imported(self, summary: dict) -> None:
+        """Reload configuration, profiles, database list, and theme after archive import."""
+        try:
+            self.services.config.load()
+        except Exception:
+            pass
+        try:
+            self.load_profiles()
+            self.load_db_profiles()
+            self.load_recent()
+        except Exception:
+            pass
+
+        ui_theme = self.services.config.get("ui_theme")
+        if ui_theme:
+            term_theme = self.services.config.get("terminal_theme")
+            self._apply_ui_theme(ui_theme, terminal_theme=term_theme)
+
+    def apply_theme_to_open_terminals(self, theme_name: Optional[str] = None) -> None:
+        """Apply terminal color scheme to every open terminal tab and split pane."""
+        if theme_name:
+            self.services.config.set("terminal_theme", theme_name)
+            self.services.config.save()
+
+        for term in self.get_all_terminals():
+            try:
+                if theme_name and hasattr(term, "set_terminal_theme"):
+                    term.set_terminal_theme(theme_name, save_config=False)
+                elif hasattr(term, "apply_terminal_theme"):
+                    term.apply_terminal_theme(theme_name)
+            except Exception:
+                pass
+
+    def _apply_ui_theme(
+        self, name: str, *, terminal_theme: Optional[str] = None
+    ) -> None:
+        app = QApplication.instance()
+        if app:
+            self.services.theme.apply(app, name)
+
+        theme = self.services.theme.current
+        if hasattr(self, "sidebar"):
+            self.sidebar.setStyleSheet(
+                f"background:{theme['panel']};border-right:1px solid {theme['border']};"
+            )
+        if hasattr(self, "right_sidebar"):
+            self.right_sidebar.setStyleSheet(
+                f"background:{theme['panel']};border-left:1px solid {theme['border']};"
+            )
+        if hasattr(self, "navbar"):
+            self.navbar.setStyleSheet(
+                f"background:{theme['panel']};border-bottom:1px solid {theme['border']};"
+            )
+
+        self.apply_theme_to_open_terminals(terminal_theme)
+        if hasattr(self, "sidebar"):
+            self._update_left_sidebar_btn_styles(not self.sidebar.isHidden())
+        self._update_right_sidebar_btn_styles()
+
     def open_theme_dialog(self):
         dialog = ThemeDialog(self, self.services)
 
@@ -3223,17 +3644,12 @@ class MainWindow(QMainWindow):
             if name:
                 self.services.config.set("ui_theme", name)
 
-                self.services.config.set(
-                    "terminal_theme",
-                    self.services.theme.get_theme(name).get("xterm", "dark"),
-                )
+                xterm_name = self.services.theme.get_theme(name).get("xterm", "dark")
+                self.services.config.set("terminal_theme", xterm_name)
 
                 self.services.config.save()
 
-                app = QApplication.instance()
-
-                if app:
-                    self.services.theme.apply(app, name)
+                self._apply_ui_theme(name, terminal_theme=xterm_name)
 
                 self.services.notifications.push(
                     "ok",
@@ -3300,7 +3716,8 @@ class MainWindow(QMainWindow):
             self,
         )
 
-        index = self.tabs.addTab(tab, "📈 MySQL Status")
+        icon = get_icon("activity", color=self.services.theme.current.get("text", "#e2e8f0"), size=16)
+        index = self.tabs.addTab(tab, icon, "MySQL Status")
         self.tabs.setCurrentIndex(index)
 
         return tab
@@ -3406,12 +3823,21 @@ class MainWindow(QMainWindow):
                     pass
 
         try:
-            self.db_manager_widget.session_manager.stop_all()
+            self.db_manager_widget.stop_all_workers()
         except Exception:
             pass
 
         try:
             self.workspace_mgr.close_all_detached()
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "_app_filter_installed", False):
+                app = QApplication.instance()
+                if app is not None:
+                    app.removeEventFilter(self)
+                self._app_filter_installed = False
         except Exception:
             pass
 

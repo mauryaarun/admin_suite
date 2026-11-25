@@ -8,7 +8,8 @@ import os
 import sys
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QFontDatabase
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 # ------------------------------------------------------------
 # Force xcb when running under Wayland to avoid keyboard issues.
@@ -47,19 +48,40 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Admin Suite")
     app.setDesktopFileName("AdminSuite")
-    app.setStyle("Fusion")
+
+    services = AppServices()
+    current_theme = services.config.get("ui_theme", "System")
+
+    if current_theme != "System":
+        app.setStyle("Fusion")
+    else:
+        available_styles = [s.lower() for s in QStyleFactory.keys()]
+        if "breeze" in available_styles:
+            app.setStyle("Breeze")
+        elif "windows" in available_styles and sys.platform.startswith("win"):
+            app.setStyle("Windows")
+        elif "macos" in available_styles or sys.platform == "darwin":
+            pass
+        else:
+            app.setStyle("Fusion")
 
     try:
         app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     except AttributeError:
         pass
 
+    if current_theme != "System":
+        from admin_suite.core.fonts import ui_font
+        app.setFont(ui_font(10))
+    else:
+        sys_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+        if sys_font.family():
+            app.setFont(sys_font)
+
     from admin_suite.core.paths import get_app_icon
     app_icon = get_app_icon()
     if app_icon and not app_icon.isNull():
         app.setWindowIcon(app_icon)
-
-    services = AppServices()
 
     services.apply_theme(app)
 

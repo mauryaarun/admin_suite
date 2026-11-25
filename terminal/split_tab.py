@@ -14,7 +14,7 @@ Improvements:
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.ssh.credentials import profile_creds
 from admin_suite.terminal.ssh_tab import SshTerminalTab
 
@@ -33,6 +34,10 @@ class SplitTerminalTab(QWidget):
     """
     A tab containing multiple SSH terminal panes for one profile.
     """
+
+    tab_switch_requested = pyqtSignal(int)
+    terminal_theme_apply_all_requested = pyqtSignal(str)
+    pane_added = pyqtSignal(object)
 
     def __init__(
         self,
@@ -60,7 +65,7 @@ class SplitTerminalTab(QWidget):
         layout.setSpacing(0)
 
         bar = QWidget()
-        bar.setFixedHeight(32)
+        bar.setFixedHeight(36)
         bar.setStyleSheet(
             f"background:{theme.get('panel', '#111')};"
             f"border-bottom:1px solid {theme.get('border', '#333')};"
@@ -69,11 +74,12 @@ class SplitTerminalTab(QWidget):
         bar.customContextMenuRequested.connect(self._show_bar_context_menu)
 
         bh = QHBoxLayout(bar)
-        bh.setContentsMargins(6, 2, 6, 2)
+        bh.setContentsMargins(8, 3, 8, 3)
+        bh.setSpacing(6)
 
         self.bar = bar
 
-        label = QLabel(f"⧉ Split session — {profile_name}")
+        label = QLabel(f"Split session — {profile_name}")
         label.setStyleSheet(
             f"color:{theme.get('accent', '#4af')};font-weight:bold;font-size:12px;"
         )
@@ -81,23 +87,46 @@ class SplitTerminalTab(QWidget):
 
         bh.addStretch()
 
-        button_style = self._button_style(theme)
+        icon_color = theme.get("text", "#eff0f1")
 
-        add_h = QPushButton("◫ Split Right")
-        add_h.setStyleSheet(button_style)
-        add_h.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        add_h.clicked.connect(lambda: self.add_pane(Qt.Orientation.Horizontal))
-        bh.addWidget(add_h)
+        self.add_h_btn = QPushButton()
+        self.add_h_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.add_h_btn,
+            "split_h",
+            tooltip="Split terminal right (horizontal)",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.add_h_btn.clicked.connect(lambda: self.add_pane(Qt.Orientation.Horizontal))
+        bh.addWidget(self.add_h_btn)
 
-        add_v = QPushButton("⬓ Split Down")
-        add_v.setStyleSheet(button_style)
-        add_v.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        add_v.clicked.connect(lambda: self.add_pane(Qt.Orientation.Vertical))
-        bh.addWidget(add_v)
+        self.add_v_btn = QPushButton()
+        self.add_v_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.add_v_btn,
+            "split_v",
+            tooltip="Split terminal down (vertical)",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
+        self.add_v_btn.clicked.connect(lambda: self.add_pane(Qt.Orientation.Vertical))
+        bh.addWidget(self.add_v_btn)
 
-        self.broadcast_btn = QPushButton("📣 Broadcast: Off")
-        self.broadcast_btn.setStyleSheet(button_style)
+        self.broadcast_btn = QPushButton()
+        self.broadcast_btn.setCheckable(True)
+        self.broadcast_btn.setChecked(False)
         self.broadcast_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_icon_button(
+            self.broadcast_btn,
+            "broadcast",
+            tooltip="Broadcast input to panes: Off",
+            color=icon_color,
+            min_width=34,
+            min_height=28,
+        )
         self.broadcast_btn.clicked.connect(self._toggle_broadcast)
         bh.addWidget(self.broadcast_btn)
 
@@ -113,22 +142,10 @@ class SplitTerminalTab(QWidget):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _button_style(self, theme: dict) -> str:
-        return (
-            "QPushButton{"
-            f"background:{theme.get('panel2', '#222')};"
-            "border:none;"
-            "padding:3px 10px;"
-            "border-radius:3px;"
-            "font-size:11px;"
-            "}"
-            "QPushButton:hover{"
-            f"background:{theme.get('hover', '#333')};"
-            "}"
-        )
-
-    def _add_menu_action(self, menu: QMenu, text: str, slot=None, enabled: bool = True):
+    def _add_menu_action(self, menu: QMenu, text: str, slot=None, enabled: bool = True, icon_name: str | None = None):
         action = menu.addAction(text)
+        if icon_name:
+            action.setIcon(get_icon(icon_name, color=self.services.theme.current.get("text", "#e2e8f0"), size=16))
         action.setEnabled(enabled)
         if slot is not None:
             action.triggered.connect(slot)
@@ -159,6 +176,10 @@ class SplitTerminalTab(QWidget):
             terminal.input_sent.connect(
                 lambda data, t=terminal: self._on_pane_input(data, t)
             )
+            terminal.tab_switch_requested.connect(self.tab_switch_requested.emit)
+            terminal.terminal_theme_apply_all_requested.connect(
+                self.terminal_theme_apply_all_requested.emit
+            )
             return terminal
 
         creds = profile_creds(data)
@@ -187,6 +208,10 @@ class SplitTerminalTab(QWidget):
 
         terminal.input_sent.connect(
             lambda data, t=terminal: self._on_pane_input(data, t)
+        )
+        terminal.tab_switch_requested.connect(self.tab_switch_requested.emit)
+        terminal.terminal_theme_apply_all_requested.connect(
+            self.terminal_theme_apply_all_requested.emit
         )
 
         return terminal
@@ -265,6 +290,7 @@ class SplitTerminalTab(QWidget):
 
         self.terminals.append(terminal)
         self._active_terminal = terminal
+        self.pane_added.emit(terminal)
 
     def close_pane(self, terminal) -> None:
         if len(self.terminals) <= 1:
@@ -378,10 +404,26 @@ class SplitTerminalTab(QWidget):
         self._update_broadcast_ui()
 
     def _update_broadcast_ui(self) -> None:
+        self.broadcast_btn.setChecked(self.broadcast_enabled)
+        theme = self.services.theme.current
         if self.broadcast_enabled:
-            self.broadcast_btn.setText("📣 Broadcast: On")
+            self.broadcast_btn.setIcon(
+                get_icon("broadcast", color=theme.get("accent", "#3daee9"), size=20)
+            )
+            self.broadcast_btn.setToolTip("Broadcast input to panes: ON (click to disable)")
         else:
-            self.broadcast_btn.setText("📣 Broadcast: Off")
+            self.broadcast_btn.setIcon(
+                get_icon("broadcast", color=theme.get("text", "#eff0f1"), size=20)
+            )
+            self.broadcast_btn.setToolTip("Broadcast input to panes: Off")
+
+    def apply_terminal_theme(self, theme_name: str | None = None) -> None:
+        """Apply terminal theme across all panes in this split tab."""
+        for terminal in self.terminals:
+            if theme_name is not None and hasattr(terminal, "set_terminal_theme"):
+                terminal.set_terminal_theme(theme_name, save_config=False)
+            elif hasattr(terminal, "apply_terminal_theme"):
+                terminal.apply_terminal_theme()
 
     # ------------------------------------------------------------------
     # Context menus
@@ -394,12 +436,14 @@ class SplitTerminalTab(QWidget):
             menu,
             "Split Right",
             lambda: self.add_pane(Qt.Orientation.Horizontal),
+            icon_name="split_h",
         )
 
         self._add_menu_action(
             menu,
             "Split Down",
             lambda: self.add_pane(Qt.Orientation.Vertical),
+            icon_name="split_v",
         )
 
         menu.addSeparator()
@@ -409,6 +453,7 @@ class SplitTerminalTab(QWidget):
             "Close Last Pane",
             self.close_last_pane,
             enabled=len(self.terminals) > 1,
+            icon_name="close",
         )
 
         self._add_menu_action(
@@ -416,6 +461,7 @@ class SplitTerminalTab(QWidget):
             "Close Other Panes",
             lambda: self.close_other_panes(),
             enabled=len(self.terminals) > 1,
+            icon_name="trash",
         )
 
         self._add_menu_action(
@@ -423,6 +469,7 @@ class SplitTerminalTab(QWidget):
             "Close All Panes",
             self.close_all_panes,
             enabled=bool(self.terminals),
+            icon_name="kill",
         )
 
         menu.addSeparator()
@@ -433,7 +480,7 @@ class SplitTerminalTab(QWidget):
             else "Enable Broadcast Input"
         )
 
-        self._add_menu_action(menu, broadcast_text, self._toggle_broadcast)
+        self._add_menu_action(menu, broadcast_text, self._toggle_broadcast, icon_name="broadcast")
 
         menu.exec(self.bar.mapToGlobal(pos))
 
@@ -444,18 +491,21 @@ class SplitTerminalTab(QWidget):
             menu,
             "Split Right",
             lambda: self.add_pane(Qt.Orientation.Horizontal, terminal),
+            icon_name="split_h",
         )
 
         self._add_menu_action(
             menu,
             "Split Down",
             lambda: self.add_pane(Qt.Orientation.Vertical, terminal),
+            icon_name="split_v",
         )
 
         self._add_menu_action(
             menu,
             "Focus Pane",
             lambda: self._focus_terminal(terminal),
+            icon_name="eye",
         )
 
         self._add_menu_action(
@@ -463,6 +513,7 @@ class SplitTerminalTab(QWidget):
             "Close Pane",
             lambda: self.close_pane(terminal),
             enabled=len(self.terminals) > 1,
+            icon_name="close",
         )
 
         self._add_menu_action(
@@ -470,6 +521,7 @@ class SplitTerminalTab(QWidget):
             "Close Other Panes",
             lambda: self.close_other_panes(terminal),
             enabled=len(self.terminals) > 1,
+            icon_name="trash",
         )
 
     # ------------------------------------------------------------------

@@ -246,9 +246,12 @@ class FileIntegrityWidget(QWidget):
 
         # Splitter: Table of File Modifications vs Raw Output
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(8)
 
         # Table of modified files
         table_container = QWidget()
+        table_container.setMinimumHeight(100)
         t_layout = QVBoxLayout(table_container)
         t_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -268,6 +271,7 @@ class FileIntegrityWidget(QWidget):
 
         # Raw Output Editor
         raw_container = QWidget()
+        raw_container.setMinimumHeight(100)
         r_layout = QVBoxLayout(raw_container)
         r_layout.setContentsMargins(0, 0, 0, 0)
         r_lbl = QLabel("<b>Raw AIDE Check Output / System Log:</b>")
@@ -281,7 +285,8 @@ class FileIntegrityWidget(QWidget):
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter)
+        splitter.setSizes([320, 200])
+        layout.addWidget(splitter, 1)
 
         return widget
 
@@ -370,9 +375,12 @@ class FileIntegrityWidget(QWidget):
 
         # Splitter: Blocked Executions Table vs Details/Trust List
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(8)
 
         # Denials Table
         d_container = QWidget()
+        d_container.setMinimumHeight(100)
         d_layout = QVBoxLayout(d_container)
         d_layout.setContentsMargins(0, 0, 0, 0)
         d_layout.addWidget(QLabel("<b>Blocked Execution Events (Fanotify Denials):</b>"))
@@ -394,6 +402,7 @@ class FileIntegrityWidget(QWidget):
 
         # Trust List / Log Viewer
         log_container = QWidget()
+        log_container.setMinimumHeight(100)
         l_layout = QVBoxLayout(log_container)
         l_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -413,7 +422,8 @@ class FileIntegrityWidget(QWidget):
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter)
+        splitter.setSizes([300, 200])
+        layout.addWidget(splitter, 1)
 
         return widget
 

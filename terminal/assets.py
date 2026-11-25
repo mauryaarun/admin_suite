@@ -43,13 +43,16 @@ SHARED_TERMINAL_HTML = """<!DOCTYPE html>
 html, body {
     margin: 0;
     padding: 0;
+    width: 100%;
     height: 100%;
     overflow: hidden;
 }
 
 #terminal {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
     padding: 4px;
-    height: calc(100% - 8px);
 }
 
 #search-bar {
@@ -95,14 +98,14 @@ html, body {
 
 <script>
 var term = new Terminal({
-    fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+    fontFamily: "'JetBrains Mono', 'Fira Code', 'Noto Sans Mono', 'DejaVu Sans Mono', Consolas, monospace",
     fontSize: 13,
     theme: {},
     cursorBlink: true,
-    cursorStyle: 'bar',
+    cursorStyle: 'block',
     allowProposedApi: true,
     scrollback: 10000,
-    convertEol: true
+    convertEol: false
 });
 
 var fitAddon = new FitAddon.FitAddon();
@@ -113,16 +116,77 @@ term.loadAddon(fitAddon);
 term.loadAddon(searchAddon);
 term.loadAddon(webLinksAddon);
 
-term.open(document.getElementById('terminal'));
-fitAddon.fit();
+var termContainer = document.getElementById('terminal');
+term.open(termContainer);
 
-document.getElementById('terminal').addEventListener('click', function () {
+var bridge = null;
+var _fitScheduled = false;
+
+function fitTerminal() {
+    if (_fitScheduled) {
+        return;
+    }
+    _fitScheduled = true;
+    requestAnimationFrame(function () {
+        _fitScheduled = false;
+        try {
+            if (!termContainer || termContainer.clientWidth <= 0 || termContainer.clientHeight <= 0) {
+                return;
+            }
+            fitAddon.fit();
+            if (bridge && bridge.resize_request) {
+                bridge.resize_request(term.cols, term.rows);
+            }
+        } catch (e) {
+            // Ignore transient layout errors during tab creation/teardown.
+        }
+    });
+}
+
+try {
+    fitAddon.fit();
+} catch (e) {
+    // Ignore initial fit errors before layout completes.
+}
+
+termContainer.addEventListener('click', function () {
     term.focus();
 });
 
 term.focus();
 
-var bridge = null;
+function _handleTabSwitchKeyEvent(e) {
+    if (!e || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) {
+        return false;
+    }
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') {
+        return false;
+    }
+    var target = e.target;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && !target.classList.contains('xterm-helper-textarea')) {
+        return false;
+    }
+    if (e.type === 'keydown' && !e._adminSuiteTabHandled) {
+        e._adminSuiteTabHandled = true;
+        e.preventDefault();
+        e.stopPropagation();
+        if (bridge && bridge.request_tab_switch) {
+            bridge.request_tab_switch(e.key === 'ArrowLeft' ? -1 : 1);
+        }
+    }
+    return true;
+}
+
+term.attachCustomKeyEventHandler(function (e) {
+    if (_handleTabSwitchKeyEvent(e)) {
+        return false;
+    }
+    return true;
+});
+
+document.addEventListener('keydown', function (e) {
+    _handleTabSwitchKeyEvent(e);
+}, true);
 
 new QWebChannel(qt.webChannelTransport, function (channel) {
     bridge = channel.objects.bridge;
@@ -145,12 +209,17 @@ new QWebChannel(qt.webChannelTransport, function (channel) {
 
     bridge.set_font_size.connect(function (size) {
         term.options.fontSize = size;
-        fitAddon.fit();
+        fitTerminal();
     });
 
     bridge.set_theme.connect(function (themeJson) {
         try {
-            term.options.theme = JSON.parse(themeJson);
+            var parsed = JSON.parse(themeJson);
+            term.options.theme = parsed;
+            if (parsed && parsed.background) {
+                document.documentElement.style.backgroundColor = parsed.background;
+                document.body.style.backgroundColor = parsed.background;
+            }
         } catch (e) {
             // Ignore invalid theme payloads.
         }
@@ -173,9 +242,8 @@ new QWebChannel(qt.webChannelTransport, function (channel) {
         searchAddon.findPrevious(text);
     });
 
-    setTimeout(function () {
-        bridge.resize_request(term.cols, term.rows);
-    }, 120);
+    fitTerminal();
+    setTimeout(fitTerminal, 120);
 });
 
 document.getElementById('search-input').addEventListener('input', function (e) {
@@ -200,9 +268,13 @@ document.getElementById('search-close').addEventListener('click', function () {
     document.getElementById('search-bar').style.display = 'none';
 });
 
-window.addEventListener('resize', function () {
-    fitAddon.fit();
-});
+window.addEventListener('resize', fitTerminal);
+if (typeof ResizeObserver !== 'undefined' && termContainer) {
+    new ResizeObserver(fitTerminal).observe(termContainer);
+}
+if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(fitTerminal);
+}
 </script>
 </body>
 </html>
@@ -268,7 +340,14 @@ def ensure_xterm_assets(logger: Logger = None) -> bool:
     html_path = shared_terminal_html_path()
 
     try:
-        if force_refresh or not html_path.exists():
+        needs_write = force_refresh or not html_path.exists()
+        if not needs_write:
+            try:
+                needs_write = html_path.read_text(encoding="utf-8") != SHARED_TERMINAL_HTML
+            except Exception:
+                needs_write = True
+
+        if needs_write:
             html_path.write_text(SHARED_TERMINAL_HTML, encoding="utf-8")
 
             try:

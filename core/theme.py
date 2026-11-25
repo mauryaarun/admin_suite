@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QGuiApplication, QPalette
+
+from admin_suite.core.fonts import qss_font_family_ui
 
 UI_THEMES: dict[str, dict[str, str]] = {
     "Breeze Dark": dict(
@@ -152,14 +155,285 @@ TERMINAL_THEMES: dict[str, dict[str, str]] = {
         "brightCyan": "#a4ffff",
         "brightWhite": "#ffffff",
     },
+    "one_dark": {
+        "background": "#282c34",
+        "foreground": "#abb2bf",
+        "cursor": "#528bff",
+        "black": "#1e2127",
+        "red": "#e06c75",
+        "green": "#98c379",
+        "yellow": "#e5c07b",
+        "blue": "#61afef",
+        "magenta": "#c678dd",
+        "cyan": "#56b6c2",
+        "white": "#abb2bf",
+        "brightBlack": "#5c6370",
+        "brightRed": "#e06c75",
+        "brightGreen": "#98c379",
+        "brightYellow": "#e5c07b",
+        "brightBlue": "#61afef",
+        "brightMagenta": "#c678dd",
+        "brightCyan": "#56b6c2",
+        "brightWhite": "#ffffff",
+    },
+    "tokyo_night": {
+        "background": "#1a1b26",
+        "foreground": "#c0caf5",
+        "cursor": "#c0caf5",
+        "black": "#15161e",
+        "red": "#f7768e",
+        "green": "#9ece6a",
+        "yellow": "#e0af68",
+        "blue": "#7aa2f7",
+        "magenta": "#bb9af7",
+        "cyan": "#7dcfff",
+        "white": "#a9b1d6",
+        "brightBlack": "#414868",
+        "brightRed": "#f7768e",
+        "brightGreen": "#9ece6a",
+        "brightYellow": "#e0af68",
+        "brightBlue": "#7aa2f7",
+        "brightMagenta": "#bb9af7",
+        "brightCyan": "#7dcfff",
+        "brightWhite": "#c0caf5",
+    },
+    "solarized_dark": {
+        "background": "#002b36",
+        "foreground": "#839496",
+        "cursor": "#93a1a1",
+        "black": "#073642",
+        "red": "#dc322f",
+        "green": "#859900",
+        "yellow": "#b58900",
+        "blue": "#268bd2",
+        "magenta": "#d33682",
+        "cyan": "#2aa198",
+        "white": "#eee8d5",
+        "brightBlack": "#586e75",
+        "brightRed": "#cb4b16",
+        "brightGreen": "#859900",
+        "brightYellow": "#b58900",
+        "brightBlue": "#268bd2",
+        "brightMagenta": "#6c71c4",
+        "brightCyan": "#2aa198",
+        "brightWhite": "#fdf6e3",
+    },
+    "solarized_light": {
+        "background": "#fdf6e3",
+        "foreground": "#586e75",
+        "cursor": "#657b83",
+        "black": "#073642",
+        "red": "#dc322f",
+        "green": "#859900",
+        "yellow": "#b58900",
+        "blue": "#268bd2",
+        "magenta": "#d33682",
+        "cyan": "#2aa198",
+        "white": "#eee8d5",
+        "brightBlack": "#657b83",
+        "brightRed": "#cb4b16",
+        "brightGreen": "#859900",
+        "brightYellow": "#b58900",
+        "brightBlue": "#268bd2",
+        "brightMagenta": "#6c71c4",
+        "brightCyan": "#2aa198",
+        "brightWhite": "#002b36",
+    },
+    "gruvbox_dark": {
+        "background": "#282828",
+        "foreground": "#ebdbb2",
+        "cursor": "#ebdbb2",
+        "black": "#282828",
+        "red": "#cc241d",
+        "green": "#98971a",
+        "yellow": "#d79921",
+        "blue": "#458588",
+        "magenta": "#b16286",
+        "cyan": "#689d6a",
+        "white": "#a89984",
+        "brightBlack": "#928374",
+        "brightRed": "#fb4934",
+        "brightGreen": "#b8bb26",
+        "brightYellow": "#fabd2f",
+        "brightBlue": "#83a598",
+        "brightMagenta": "#d3869b",
+        "brightCyan": "#8ec07c",
+        "brightWhite": "#ebdbb2",
+    },
+    "catppuccin_mocha": {
+        "background": "#1e1e2e",
+        "foreground": "#cdd6f4",
+        "cursor": "#f5e0dc",
+        "black": "#45475a",
+        "red": "#f38ba8",
+        "green": "#a6e3a1",
+        "yellow": "#f9e2af",
+        "blue": "#89b4fa",
+        "magenta": "#f5c2e7",
+        "cyan": "#94e2d5",
+        "white": "#bac2de",
+        "brightBlack": "#585b70",
+        "brightRed": "#f38ba8",
+        "brightGreen": "#a6e3a1",
+        "brightYellow": "#f9e2af",
+        "brightBlue": "#89b4fa",
+        "brightMagenta": "#f5c2e7",
+        "brightCyan": "#94e2d5",
+        "brightWhite": "#a6adc8",
+    },
+    "monokai": {
+        "background": "#272822",
+        "foreground": "#f8f8f2",
+        "cursor": "#f8f8f0",
+        "black": "#272822",
+        "red": "#f92672",
+        "green": "#a6e22e",
+        "yellow": "#f4bf75",
+        "blue": "#66d9ef",
+        "magenta": "#ae81ff",
+        "cyan": "#a1efe4",
+        "white": "#f8f8f2",
+        "brightBlack": "#75715e",
+        "brightRed": "#f92672",
+        "brightGreen": "#a6e22e",
+        "brightYellow": "#f4bf75",
+        "brightBlue": "#66d9ef",
+        "brightMagenta": "#ae81ff",
+        "brightCyan": "#a1efe4",
+        "brightWhite": "#f9f8f5",
+    },
+    "green_phosphor": {
+        "background": "#0a140d",
+        "foreground": "#7cf29c",
+        "cursor": "#7cf29c",
+        "black": "#071009",
+        "red": "#ff6b6b",
+        "green": "#4be37a",
+        "yellow": "#d2f56b",
+        "blue": "#4ecdc4",
+        "magenta": "#95e8a3",
+        "cyan": "#5cf2c7",
+        "white": "#b6f7c8",
+        "brightBlack": "#2f573a",
+        "brightRed": "#ff8787",
+        "brightGreen": "#80ffaa",
+        "brightYellow": "#e5ff8a",
+        "brightBlue": "#7ce8df",
+        "brightMagenta": "#b5f7c2",
+        "brightCyan": "#8affdc",
+        "brightWhite": "#e2ffea",
+    },
 }
+
+TERMINAL_THEME_LABELS: dict[str, str] = {
+    "dark": "Midnight Dark",
+    "light": "Clean Light",
+    "nord": "Nord",
+    "dracula": "Dracula",
+    "one_dark": "One Dark",
+    "tokyo_night": "Tokyo Night",
+    "solarized_dark": "Solarized Dark",
+    "solarized_light": "Solarized Light",
+    "gruvbox_dark": "Gruvbox Dark",
+    "catppuccin_mocha": "Catppuccin Mocha",
+    "monokai": "Monokai",
+    "green_phosphor": "Retro Phosphor",
+}
+
+
+def is_system_dark() -> bool:
+    """Detect whether system/desktop environment is currently using a dark theme."""
+    app = QGuiApplication.instance()
+    if app is not None:
+        hints = app.styleHints()
+        color_scheme = getattr(hints, "colorScheme", lambda: None)()
+        if color_scheme is not None:
+            try:
+                return color_scheme == Qt.ColorScheme.Dark
+            except Exception:
+                pass
+        win_color = app.palette().color(QPalette.ColorRole.Window)
+        return win_color.lightness() < 128
+    return False
+
+
+def get_system_ui_theme() -> dict[str, str]:
+    """
+    Extract dynamic system theme colors from Qt's native palette and OS appearance hints.
+    Automatically supports both Light and Dark OS appearances, matching system fonts and colors.
+    """
+    app = QGuiApplication.instance()
+    is_dark = is_system_dark()
+
+    if app is not None:
+        pal = app.palette()
+        win = pal.color(QPalette.ColorRole.Window).name()
+        panel = pal.color(QPalette.ColorRole.Base).name()
+        panel2 = pal.color(QPalette.ColorRole.Button).name()
+        text = pal.color(QPalette.ColorRole.WindowText).name()
+        accent = pal.color(QPalette.ColorRole.Highlight).name()
+
+        # Resolve placeholder/dim text color
+        sub_color = pal.color(QPalette.ColorRole.PlaceholderText) if hasattr(QPalette.ColorRole, "PlaceholderText") else None
+        if sub_color and sub_color.isValid():
+            sub = sub_color.name()
+        else:
+            sub = "#95a5a6" if is_dark else "#5a6472"
+
+        # Adaptive borders and hover colors derived from native window/button
+        win_qcolor = pal.color(QPalette.ColorRole.Window)
+        if is_dark:
+            border = win_qcolor.lighter(135).name()
+            hover = win_qcolor.lighter(120).name()
+            ok = "#0dbc79"
+            warn = "#f39c12"
+            danger = "#ff5555"
+            xterm = "dark"
+        else:
+            border = win_qcolor.darker(120).name()
+            hover = win_qcolor.darker(108).name()
+            ok = "#0a7d4f"
+            warn = "#b06e00"
+            danger = "#c42b1c"
+            xterm = "light"
+
+        return dict(
+            win=win,
+            panel=panel,
+            panel2=panel2,
+            text=text,
+            sub=sub,
+            accent=accent,
+            border=border,
+            hover=hover,
+            ok=ok,
+            warn=warn,
+            danger=danger,
+            xterm=xterm,
+        )
+
+    return dict(
+        win="#1b1e23",
+        panel="#232629",
+        panel2="#2a2e32",
+        text="#eff0f1",
+        sub="#95a5a6",
+        accent="#3daee9",
+        border="#31363b",
+        hover="#2d3238",
+        ok="#0dbc79",
+        warn="#f39c12",
+        danger="#ff5555",
+        xterm="dark",
+    )
+
 
 QSS_TEMPLATE = """
 QMainWindow, QDialog { background:$WIN; }
 QWidget {
     color:$TEXT;
-    font-family:'Segoe UI',Helvetica,Arial,sans-serif;
-    font-size:13px;
+    font-family:$FONT_UI;
+    $FONT_SIZE_CSS
 }
 QStatusBar {
     background:$PANEL;
@@ -243,6 +517,22 @@ QPushButton:pressed {
 QPushButton:disabled {
     color:$SUB;
     background:$PANEL;
+}
+QPushButton#IconToolBtn {
+    padding:4px 6px;
+    border-radius:6px;
+    background:$PANEL2;
+    border:1px solid $BORDER;
+}
+QPushButton#IconToolBtn:hover {
+    background:$HOVER;
+    border-color:$ACCENT;
+}
+QPushButton#IconToolBtn:pressed,
+QPushButton#IconToolBtn:checked {
+    background:$ACCENT;
+    border-color:$ACCENT;
+    color:white;
 }
 QToolButton {
     padding:5px;
@@ -343,14 +633,17 @@ QToolTip {
 class ThemeManager:
     """
     Applies UI themes and exposes terminal themes.
+    Defaults to native system theme (auto Light/Dark).
     """
 
     def __init__(self):
-        self.themes = UI_THEMES
+        self.themes = {"System": get_system_ui_theme(), **UI_THEMES}
         self.terminal_themes = TERMINAL_THEMES
+        self.terminal_theme_labels = TERMINAL_THEME_LABELS
 
-        self.current_name = "Breeze Dark"
-        self.current: dict[str, str] = dict(UI_THEMES[self.current_name])
+        self.current_name = "System"
+        self.current: dict[str, str] = self.get_theme(self.current_name)
+        self._connected_scheme_listener = False
 
     @property
     def name(self) -> str:
@@ -361,9 +654,11 @@ class ThemeManager:
 
     def get_theme(self, name: str) -> dict[str, str]:
         """
-        Get UI theme dict by name.
+        Get UI theme dict by name. Defaults to dynamic system theme.
         """
-        return self.themes.get(name, self.themes["Breeze Dark"])
+        if name == "System" or not name:
+            return get_system_ui_theme()
+        return self.themes.get(name, get_system_ui_theme())
 
     def get_terminal_theme(self, name: str) -> dict[str, str]:
         """
@@ -371,16 +666,31 @@ class ThemeManager:
         """
         return self.terminal_themes.get(name, self.terminal_themes["dark"])
 
+    def terminal_theme_items(self) -> list[tuple[str, str]]:
+        """
+        Return ordered (theme_key, display_label) pairs for terminal theme pickers.
+        """
+        return [
+            (key, self.terminal_theme_labels.get(key, key.replace("_", " ").title()))
+            for key in self.terminal_themes.keys()
+        ]
+
     def apply(self, app: Any, name: str) -> None:
         """
-        Apply theme to QApplication.
+        Apply theme to QApplication. When name is 'System', uses native OS theme,
+        colors, and font size.
         """
+        if not name:
+            name = "System"
+
         theme = self.get_theme(name)
 
         self.current_name = name
         self.current = theme
 
-        qss = QSS_TEMPLATE
+        font_size_css = "font-size:13px;" if name != "System" else ""
+        qss = QSS_TEMPLATE.replace("$FONT_UI", qss_font_family_ui())
+        qss = qss.replace("$FONT_SIZE_CSS", font_size_css)
 
         for key, value in sorted(theme.items(), key=lambda kv: len(kv[0]), reverse=True):
             if key == "xterm":
@@ -390,15 +700,24 @@ class ThemeManager:
 
         app.setStyleSheet(qss)
 
-        palette = app.palette()
-
-        palette.setColor(QPalette.ColorRole.Window, QColor(theme["win"]))
-        palette.setColor(QPalette.ColorRole.Base, QColor(theme["panel"]))
-        palette.setColor(QPalette.ColorRole.Text, QColor(theme["text"]))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor(theme["text"]))
-        palette.setColor(QPalette.ColorRole.Button, QColor(theme["panel2"]))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor(theme["text"]))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(theme["accent"]))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-
-        app.setPalette(palette)
+        if name != "System":
+            palette = app.palette()
+            palette.setColor(QPalette.ColorRole.Window, QColor(theme["win"]))
+            palette.setColor(QPalette.ColorRole.Base, QColor(theme["panel"]))
+            palette.setColor(QPalette.ColorRole.Text, QColor(theme["text"]))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(theme["text"]))
+            palette.setColor(QPalette.ColorRole.Button, QColor(theme["panel2"]))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(theme["text"]))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor(theme["accent"]))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+            app.setPalette(palette)
+        else:
+            # When System theme is applied, listen for live OS light/dark changes
+            if hasattr(app, "styleHints") and not self._connected_scheme_listener:
+                try:
+                    hints = app.styleHints()
+                    if hasattr(hints, "colorSchemeChanged"):
+                        hints.colorSchemeChanged.connect(lambda _: self.apply(app, "System"))
+                        self._connected_scheme_listener = True
+                except Exception:
+                    pass

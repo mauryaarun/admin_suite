@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.icons import style_icon_button
 from admin_suite.ssh.remote_exec import RemoteExecThread
 from admin_suite.ui.dialogs import SudoCredentialsDialog, ensure_sudo_credentials
 from admin_suite.security.firewall import FirewallManagerWidget
@@ -34,6 +35,7 @@ from admin_suite.security.malware_scanner import MalwareScannerWidget
 from admin_suite.security.ssl_auditor import SSLAuditorWidget
 from admin_suite.security.file_integrity import FileIntegrityWidget
 from admin_suite.security.compliance import ComplianceAuditorWidget
+from admin_suite.security.system_logs import SystemLogViewerWidget
 from admin_suite.security.commands import SecurityCommands
 from admin_suite.ui.linux_settings_dialog import LinuxSettingsDialog
 
@@ -130,18 +132,33 @@ class SecurityHubTab(QWidget):
         self.sudo_chk.setChecked(True)
         head_layout.addWidget(self.sudo_chk)
 
-        self.sudo_btn = QPushButton("🔑")
-        self.sudo_btn.setToolTip("Configure Root / Sudo credentials for this profile")
-        self.sudo_btn.setFixedWidth(28)
+        self.sudo_btn = QPushButton()
+        style_icon_button(
+            self.sudo_btn,
+            "key",
+            "Configure Root / Sudo credentials for this profile",
+            icon_only=True,
+        )
         self.sudo_btn.clicked.connect(self._configure_sudo_credentials)
         head_layout.addWidget(self.sudo_btn)
 
-        btn_settings = QPushButton("⚙️ Linux / Distro Settings")
-        btn_settings.setToolTip("Configure Linux distro preference, firewall backend (UFW vs Firewalld), and log paths")
+        btn_settings = QPushButton()
+        style_icon_button(
+            btn_settings,
+            "settings",
+            "Configure Linux distro preference, firewall backend (UFW vs Firewalld), and log paths",
+            icon_only=True,
+        )
         btn_settings.clicked.connect(self._open_settings)
         head_layout.addWidget(btn_settings)
 
-        btn_full_audit = QPushButton("🚀 Run Full Audit")
+        btn_full_audit = QPushButton()
+        style_icon_button(
+            btn_full_audit,
+            "refresh",
+            "Run Full Security Audit",
+            icon_only=True,
+        )
         btn_full_audit.clicked.connect(self.refresh_all)
         head_layout.addWidget(btn_full_audit)
 
@@ -215,7 +232,15 @@ class SecurityHubTab(QWidget):
         )
         self.tabs.addTab(self.compliance_tab, "⚖️ Compliance & Auditing")
 
-        # 9. VAPT & Web Application Security Audit
+        # 9. System Log Viewer (/var/log/messages, syslog & journalctl)
+        self.system_logs_tab = SystemLogViewerWidget(
+            run_cmd=self.execute_command,
+            theme=theme,
+            parent=self,
+        )
+        self.tabs.addTab(self.system_logs_tab, "📋 System Logs")
+
+        # 10. VAPT & Web Application Security Audit
         from admin_suite.vapt.tab import VaptTab
         initial_host = ""
         if self.profile:
@@ -328,6 +353,7 @@ class SecurityHubTab(QWidget):
         self.auditor_tab.refresh()
         self.malware_tab.refresh()
         self.ssl_tab.refresh()
+        self.system_logs_tab.refresh()
         # Note: File Integrity & Whitelisting and Compliance & Auditing
         # remain strictly on-demand to prevent heavy, automated disk/security scans.
 
@@ -362,6 +388,8 @@ class SecurityHubTab(QWidget):
             self.badge_distro.setStyleSheet("background: #311b4d; color: #ea80fc; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
         else:
             self.badge_distro.setStyleSheet(f"background: #2a2a2a; border: 1px solid #444; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
+        self.badge_audit.setText("Reports: ~/reports")
+        self.badge_audit.setStyleSheet("background: #1b3d4d; color: #80d8ff; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
 
     def _update_fw_badge(self, stdout: str, stderr: str, code: int):
         st = stdout.lower().strip()

@@ -12,7 +12,7 @@ import time
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QKeySequence, QShortcut
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -43,6 +43,8 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.core.paths import (
     QUERY_FAVORITES_FILE,
     QUERY_HISTORY_FILE,
@@ -56,10 +58,10 @@ from admin_suite.db.cache import SchemaCache
 from admin_suite.db.completer import SqlCompleter
 from admin_suite.db.dialogs import RecordDialog
 from admin_suite.db.export import (
-    export_database,
+    DATABASE_EXPORT_FORMATS,
+    TABLE_EXPORT_FORMATS,
+    DbExportWorker,
     export_result_csv,
-    export_result_json,
-    export_table_sql,
 )
 from admin_suite.db.highlighter import SQLHighlighter, SQL_KEYWORDS
 from admin_suite.db.models import SqlResultModel
@@ -146,19 +148,24 @@ class DatabaseManagerWidget(QWidget):
         toolbar.setContentsMargins(6, 6, 6, 6)
         toolbar.setSpacing(6)
 
-        self.connect_btn = QPushButton("🔌 Connect Database")
+        self.connect_btn = QPushButton()
+        style_icon_button(self.connect_btn, "plug", "Connect to database and load schemas", icon_only=True)
         self.connect_btn.clicked.connect(self.load_schemas)
 
-        self.test_btn = QPushButton("🔌 Test Only")
+        self.test_btn = QPushButton()
+        style_icon_button(self.test_btn, "activity", "Test database connection", icon_only=True)
         self.test_btn.clicked.connect(self.test_connection)
 
-        self.refresh_all_btn = QPushButton("🔄 Refresh")
+        self.refresh_all_btn = QPushButton()
+        style_icon_button(self.refresh_all_btn, "refresh", "Refresh schemas and tables", icon_only=True)
         self.refresh_all_btn.clicked.connect(self.load_schemas)
 
-        self.hist_btn = QPushButton("🕒 History")
+        self.hist_btn = QPushButton()
+        style_icon_button(self.hist_btn, "clock", "View query execution history", icon_only=True)
         self.hist_btn.clicked.connect(self.show_history)
 
-        self.fav_btn = QPushButton("⭐ Favorites")
+        self.fav_btn = QPushButton()
+        style_icon_button(self.fav_btn, "star", "Open saved favorite queries", icon_only=True)
         self.fav_btn.clicked.connect(self.show_favorites)
 
         self.conn_status = QLabel("● Idle")
@@ -192,7 +199,8 @@ class DatabaseManagerWidget(QWidget):
         left_layout.setSpacing(4)
 
         self.tree_filter = QLineEdit()
-        self.tree_filter.setPlaceholderText("🔍 Filter schemas / tables...")
+        self.tree_filter.setPlaceholderText("Filter schemas / tables...")
+        self.tree_filter.setClearButtonEnabled(True)
         self.tree_filter.textChanged.connect(self._filter_tree)
         left_layout.addWidget(self.tree_filter)
 
@@ -209,12 +217,12 @@ class DatabaseManagerWidget(QWidget):
         tree_bar.setContentsMargins(0, 0, 0, 0)
         tree_bar.setSpacing(4)
 
-        create_db_btn = QPushButton("➕ DB")
-        create_db_btn.setToolTip("Create new database")
+        create_db_btn = QPushButton()
+        style_icon_button(create_db_btn, "database", "Create new database / schema", icon_only=True)
         create_db_btn.clicked.connect(self.create_database_dialog)
 
-        create_tbl_btn = QPushButton("➕ Table")
-        create_tbl_btn.setToolTip("Create new table in selected database")
+        create_tbl_btn = QPushButton()
+        style_icon_button(create_tbl_btn, "table", "Create new table in selected database", icon_only=True)
         create_tbl_btn.clicked.connect(
             lambda: self.create_table_dialog(self.current_schema or "")
         )
@@ -286,33 +294,41 @@ class DatabaseManagerWidget(QWidget):
         self.data_filter_input.returnPressed.connect(self.load_table_data)
         action_bar.addWidget(self.data_filter_input, 1)
 
-        self.data_filter_btn = QPushButton("🔍 Filter")
+        self.data_filter_btn = QPushButton()
+        style_icon_button(self.data_filter_btn, "filter", "Apply WHERE filter and reload rows", size=20, icon_only=True)
         self.data_filter_btn.clicked.connect(self.load_table_data)
         action_bar.addWidget(self.data_filter_btn)
 
-        self.data_refresh_btn = QPushButton("🔄 Refresh")
+        self.data_refresh_btn = QPushButton()
+        style_icon_button(self.data_refresh_btn, "refresh", "Refresh table rows", size=20, icon_only=True)
         self.data_refresh_btn.clicked.connect(self.load_table_data)
         action_bar.addWidget(self.data_refresh_btn)
 
         # CRUD actions
-        self.data_insert_btn = QPushButton("➕ Insert")
-        self.data_insert_btn.setToolTip("Insert new record")
+        self.data_insert_btn = QPushButton()
+        style_icon_button(self.data_insert_btn, "plus", "Insert new record", size=20, icon_only=True)
         self.data_insert_btn.clicked.connect(self.insert_data_row)
         action_bar.addWidget(self.data_insert_btn)
 
-        self.data_update_btn = QPushButton("✏️ Edit")
-        self.data_update_btn.setToolTip("Edit selected record")
+        self.data_update_btn = QPushButton()
+        style_icon_button(self.data_update_btn, "edit", "Edit selected record", size=20, icon_only=True)
         self.data_update_btn.clicked.connect(self.edit_selected_data_row)
         action_bar.addWidget(self.data_update_btn)
 
-        self.data_delete_btn = QPushButton("🗑 Delete")
-        self.data_delete_btn.setToolTip("Delete selected record")
+        self.data_delete_btn = QPushButton()
+        style_icon_button(self.data_delete_btn, "trash", "Delete selected record", size=20, icon_only=True)
         self.data_delete_btn.clicked.connect(self.delete_selected_data_row)
         action_bar.addWidget(self.data_delete_btn)
 
         # Prominent dynamic export button
-        self.data_export_btn = QPushButton("📤 Export Data ▾")
-        self.data_export_btn.setToolTip("Export table data to CSV, JSON, or SQL INSERT")
+        self.data_export_btn = QPushButton()
+        style_icon_button(
+            self.data_export_btn,
+            "export",
+            "Export table data to CSV, JSON, or SQL INSERT",
+            size=20,
+            icon_only=True,
+        )
         self.data_export_btn.clicked.connect(self.show_data_export_menu)
         action_bar.addWidget(self.data_export_btn)
 
@@ -337,20 +353,27 @@ class DatabaseManagerWidget(QWidget):
 
         self.data_sql_preview = QLineEdit()
         self.data_sql_preview.setReadOnly(True)
+        self.data_sql_preview.setFont(mono_font(9))
         self.data_sql_preview.setPlaceholderText("Active query preview...")
         self.data_sql_preview.setStyleSheet(
-            f"background:{self._theme['panel2']};color:{self._theme['text']};font-family:monospace;font-size:11px;"
+            f"background:{self._theme['panel2']};color:{self._theme['text']};"
         )
         bottom_bar.addWidget(self.data_sql_preview, 1)
 
-        self.data_open_sql_btn = QPushButton("⚡ Open in Console")
-        self.data_open_sql_btn.setToolTip("Send this query to the SQL Console tab")
+        self.data_open_sql_btn = QPushButton()
+        style_icon_button(
+            self.data_open_sql_btn,
+            "bolt",
+            "Open in Console — send this query to the SQL Console tab",
+            size=20,
+            icon_only=True,
+        )
         self.data_open_sql_btn.clicked.connect(self._transfer_data_query_to_console)
         bottom_bar.addWidget(self.data_open_sql_btn)
 
         layout.addLayout(bottom_bar)
 
-        self.workbench_tabs.addTab(self.data_tab, "📊 Table Data")
+        self.workbench_tabs.addTab(self.data_tab, get_icon("table", size=16), "Table Data")
 
     # ============================================================
     # Workbench Tab 1: Table Schema
@@ -366,24 +389,37 @@ class DatabaseManagerWidget(QWidget):
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(6)
 
-        self.schema_header_label = QLabel("📐 Select a table from tree to view schema")
+        self.schema_header_label = QLabel("Select a table from tree to view schema")
         self.schema_header_label.setStyleSheet(
             f"color:{self._theme['accent']};font-weight:bold;font-size:13px;"
         )
         bar.addWidget(self.schema_header_label)
         bar.addStretch()
 
-        self.alter_table_btn = QPushButton("🛠️ Design / Alter Table (HeidiSQL Mode)")
-        self.alter_table_btn.setToolTip("Open full visual Table Designer (columns, keys, indexes)")
+        self.alter_table_btn = QPushButton()
+        style_icon_button(
+            self.alter_table_btn,
+            "wrench",
+            "Design / Alter Table — open visual Table Designer (columns, keys, indexes)",
+            size=20,
+            icon_only=True,
+        )
         self.alter_table_btn.clicked.connect(self.open_table_designer)
         bar.addWidget(self.alter_table_btn)
 
-        self.schema_export_btn = QPushButton("📤 Export Schema ▾")
-        self.schema_export_btn.setToolTip("Export column definitions or CREATE TABLE DDL")
+        self.schema_export_btn = QPushButton()
+        style_icon_button(
+            self.schema_export_btn,
+            "export",
+            "Export column definitions or CREATE TABLE DDL",
+            size=20,
+            icon_only=True,
+        )
         self.schema_export_btn.clicked.connect(self.show_schema_export_menu)
         bar.addWidget(self.schema_export_btn)
 
-        self.schema_refresh_btn = QPushButton("🔄 Refresh")
+        self.schema_refresh_btn = QPushButton()
+        style_icon_button(self.schema_refresh_btn, "refresh", "Refresh table schema", size=20, icon_only=True)
         self.schema_refresh_btn.clicked.connect(self.load_table_schema)
         bar.addWidget(self.schema_refresh_btn)
 
@@ -403,7 +439,7 @@ class DatabaseManagerWidget(QWidget):
         self.schema_status_label.setStyleSheet(f"color:{self._theme['sub']};padding:2px;")
         layout.addWidget(self.schema_status_label)
 
-        self.workbench_tabs.addTab(self.schema_tab, "📐 Table Schema")
+        self.workbench_tabs.addTab(self.schema_tab, get_icon("sliders", size=16), "Table Schema")
 
     # ============================================================
     # Workbench Tab 2: SQL Query Console
@@ -420,24 +456,34 @@ class DatabaseManagerWidget(QWidget):
         query_buttons.setContentsMargins(0, 0, 0, 0)
         query_buttons.setSpacing(6)
 
-        self.exec_btn = QPushButton("▶ Execute (F5)")
+        self.exec_btn = QPushButton()
+        style_icon_button(self.exec_btn, "play", "Execute SQL query (F5)", size=20, icon_only=True)
         self.exec_btn.setStyleSheet(
-            f"background:{self._theme['accent']};color:white;font-weight:bold;padding:4px 14px;"
+            f"background:{self._theme['accent']};color:white;border-radius:5px;"
         )
         self.exec_btn.clicked.connect(self.execute_query)
 
-        self.explain_btn = QPushButton("📊 EXPLAIN")
+        self.explain_btn = QPushButton()
+        style_icon_button(self.explain_btn, "activity", "Run EXPLAIN execution plan", size=20, icon_only=True)
         self.explain_btn.clicked.connect(self.explain_query)
 
-        self.star_btn = QPushButton("⭐ Save Favorite")
+        self.star_btn = QPushButton()
+        style_icon_button(self.star_btn, "star", "Save query to Favorites", size=20, icon_only=True)
         self.star_btn.clicked.connect(self.save_favorite)
 
-        self.clear_btn = QPushButton("🧹 Clear")
+        self.clear_btn = QPushButton()
+        style_icon_button(self.clear_btn, "clear", "Clear SQL editor", size=20, icon_only=True)
         self.clear_btn.clicked.connect(lambda: self.query_edit.clear())
 
         # Prominent dynamic export button
-        self.query_export_btn = QPushButton("📤 Export Results ▾")
-        self.query_export_btn.setToolTip("Export query results to CSV, JSON, or Markdown")
+        self.query_export_btn = QPushButton()
+        style_icon_button(
+            self.query_export_btn,
+            "export",
+            "Export query results to CSV, JSON, or Markdown",
+            size=20,
+            icon_only=True,
+        )
         self.query_export_btn.clicked.connect(self.show_query_export_menu)
 
         query_buttons.addWidget(self.exec_btn)
@@ -453,9 +499,9 @@ class DatabaseManagerWidget(QWidget):
         splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.query_edit = QTextEdit()
-        self.query_edit.setFont(QFont("JetBrains Mono, Consolas", 11))
+        self.query_edit.setFont(mono_font(11))
         self.query_edit.setPlaceholderText(
-            "-- Write SQL here. Press F5 or ▶ Execute to run.\n"
+            "-- Write SQL here. Press F5 or click Execute to run.\n"
             "-- Double-click a table in the tree to browse its data and schema.\n"
             "-- Autocompletion active for keywords, schemas, and columns."
         )
@@ -487,7 +533,7 @@ class DatabaseManagerWidget(QWidget):
 
         layout.addWidget(splitter, 1)
 
-        self.workbench_tabs.addTab(self.query_tab, "⚡ SQL Console")
+        self.workbench_tabs.addTab(self.query_tab, get_icon("code", size=16), "SQL Console")
 
     # ============================================================
     # Workbench Tab 3: Object Info & DDL
@@ -500,7 +546,7 @@ class DatabaseManagerWidget(QWidget):
         layout.setSpacing(6)
 
         # Top Header
-        self.info_header_label = QLabel("ℹ️ Select a database or table to view information")
+        self.info_header_label = QLabel("Select a database or table to view information")
         self.info_header_label.setStyleSheet(
             f"color:{self._theme['accent']};font-weight:bold;font-size:13px;"
         )
@@ -536,8 +582,15 @@ class DatabaseManagerWidget(QWidget):
         self.db_tables_filter.textChanged.connect(self._filter_db_summary_tables)
         db_bar.addWidget(self.db_tables_filter, 1)
 
-        self.export_db_dump_btn = QPushButton("📤 Export Database Dump (SQL)")
-        self.export_db_dump_btn.clicked.connect(lambda: self.export_database(self.current_schema or ""))
+        self.export_db_dump_btn = QPushButton()
+        style_icon_button(
+            self.export_db_dump_btn,
+            "export",
+            "Export Database (SQL, GZ, ZIP, Excel, SQLite)",
+            size=20,
+            icon_only=True,
+        )
+        self.export_db_dump_btn.clicked.connect(self.show_database_export_menu)
         db_bar.addWidget(self.export_db_dump_btn)
 
         db_sum_layout.addLayout(db_bar)
@@ -565,13 +618,15 @@ class DatabaseManagerWidget(QWidget):
         ddl_bar.addWidget(QLabel("CREATE TABLE Definition (DDL):"))
         ddl_bar.addStretch()
 
-        self.copy_ddl_btn = QPushButton("📋 Copy DDL")
+        self.copy_ddl_btn = QPushButton()
+        style_icon_button(self.copy_ddl_btn, "copy", "Copy DDL to clipboard", size=20, icon_only=True)
         self.copy_ddl_btn.clicked.connect(
             lambda: QApplication.clipboard().setText(self.table_ddl_edit.toPlainText())
         )
         ddl_bar.addWidget(self.copy_ddl_btn)
 
-        self.export_ddl_btn = QPushButton("💾 Export DDL (*.sql)")
+        self.export_ddl_btn = QPushButton()
+        style_icon_button(self.export_ddl_btn, "save", "Export DDL (*.sql)", size=20, icon_only=True)
         self.export_ddl_btn.clicked.connect(self._export_table_ddl)
         ddl_bar.addWidget(self.export_ddl_btn)
 
@@ -579,7 +634,7 @@ class DatabaseManagerWidget(QWidget):
 
         self.table_ddl_edit = QPlainTextEdit()
         self.table_ddl_edit.setReadOnly(True)
-        self.table_ddl_edit.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.table_ddl_edit.setFont(mono_font(10))
         self._ddl_highlighter = SQLHighlighter(self.table_ddl_edit.document())
         ddl_layout.addWidget(self.table_ddl_edit, 1)
 
@@ -591,7 +646,7 @@ class DatabaseManagerWidget(QWidget):
         self.db_summary_widget.hide()
         self.table_ddl_widget.hide()
 
-        self.workbench_tabs.addTab(self.info_tab, "ℹ️ Object Info & DDL")
+        self.workbench_tabs.addTab(self.info_tab, get_icon("info", size=16), "Object Info & DDL")
 
     # ============================================================
     # Tree Filtering & Navigation
@@ -1006,15 +1061,10 @@ class DatabaseManagerWidget(QWidget):
             return
 
         menu = QMenu(self)
-        menu.addAction("📄 Export Results (CSV)").triggered.connect(
-            lambda: self.export_result("csv")
-        )
-        menu.addAction("📋 Export Results (JSON)").triggered.connect(
-            lambda: self.export_result("json")
-        )
-        menu.addAction("📝 Export Results (Markdown Table)").triggered.connect(
-            lambda: self._export_query_markdown()
-        )
+        for fmt, label, _flt in TABLE_EXPORT_FORMATS:
+            menu.addAction(label).triggered.connect(
+                lambda _checked=False, f=fmt: self.export_result(f)
+            )
         menu.addSeparator()
         menu.addAction("📋 Copy to Clipboard (TSV)").triggered.connect(
             lambda: self._copy_results_to_clipboard()
@@ -1027,28 +1077,45 @@ class DatabaseManagerWidget(QWidget):
             return
 
         tbl_name = self.current_table or "table"
+        schema = self.current_schema or ""
         menu = QMenu(self)
-        menu.addAction("📄 Export Current Rows (CSV)").triggered.connect(
-            lambda: self._export_data_tab_csv()
-        )
-        menu.addAction("📋 Export Current Rows (JSON)").triggered.connect(
-            lambda: self._export_data_tab_json()
-        )
-        menu.addAction("💾 Export SQL INSERT Statements (*.sql)").triggered.connect(
-            lambda: self.export_table_sql(self.current_schema or "", tbl_name)
-        )
+
+        loaded_menu = menu.addMenu("Export Loaded Rows (Background)")
+        for fmt, label, _flt in TABLE_EXPORT_FORMATS:
+            loaded_menu.addAction(label).triggered.connect(
+                lambda _checked=False, f=fmt: self._export_data_tab(f)
+            )
+
+        full_menu = menu.addMenu("Export Full Table (Background)")
+        for fmt, label, _flt in TABLE_EXPORT_FORMATS:
+            full_menu.addAction(label).triggered.connect(
+                lambda _checked=False, f=fmt, s=schema, t=tbl_name: self.export_table(s, t, f)
+            )
+
         menu.addSeparator()
         menu.addAction("📋 Copy to Clipboard (TSV)").triggered.connect(
             lambda: self._copy_data_to_clipboard()
         )
         menu.exec(self.data_export_btn.mapToGlobal(self.data_export_btn.rect().bottomLeft()))
 
+    def show_database_export_menu(self) -> None:
+        schema = self.current_schema or ("main" if self._backend_name() == "sqlite" else "")
+        if not schema:
+            QMessageBox.information(self, "Export Database", "Select a database schema in the tree first.")
+            return
+
+        menu = QMenu(self)
+        for fmt, label, _suffix, _flt in DATABASE_EXPORT_FORMATS:
+            menu.addAction(label).triggered.connect(
+                lambda _checked=False, f=fmt, db=schema: self.export_database(db, fmt=f)
+            )
+        menu.exec(self.export_db_dump_btn.mapToGlobal(self.export_db_dump_btn.rect().bottomLeft()))
+
     def show_schema_export_menu(self) -> None:
         if not self._current_table_columns:
             QMessageBox.information(self, "Export", "No schema columns loaded to export.")
             return
 
-        tbl_name = self.current_table or "table"
         menu = QMenu(self)
         menu.addAction("📄 Export Columns (CSV)").triggered.connect(
             lambda: self._export_schema_csv()
@@ -1061,19 +1128,35 @@ class DatabaseManagerWidget(QWidget):
         )
         menu.exec(self.schema_export_btn.mapToGlobal(self.schema_export_btn.rect().bottomLeft()))
 
-    def _export_data_tab_csv(self) -> None:
+    def _export_data_tab(self, fmt: str = "csv") -> None:
+        if not self._current_data_headers or not self._current_data_rows:
+            QMessageBox.information(self, "Export", "No table data loaded to export.")
+            return
         tbl = self.current_table or "data"
-        path, _ = QFileDialog.getSaveFileName(self, "Export Table Data CSV", f"{tbl}.csv", "CSV (*.csv)")
-        if path:
-            export_result_csv(path, self._current_data_headers, self._current_data_rows)
-            self.services.notifications.push("ok", "Export", f"{len(self._current_data_rows)} rows → {path}")
+        schema = self.current_schema or ""
+        fqn = f"{self._qident(schema)}.{self._qident(tbl)}" if schema else self._qident(tbl)
+        label, flt, default_name = self._table_format_dialog_spec(tbl, fmt)
+        path, _ = QFileDialog.getSaveFileName(self, f"Export Table Data ({label})", default_name, flt)
+        if not path:
+            return
+        self._start_export_worker(
+            mode="dataset",
+            path=path,
+            fmt=fmt,
+            title=f"Export Table Data ({fmt.upper()})",
+            description=f"{tbl} ({len(self._current_data_rows)} rows)",
+            table_name=tbl,
+            fqn=fqn,
+            backend=self._backend_name(),
+            headers=self._current_data_headers,
+            rows=self._current_data_rows,
+        )
+
+    def _export_data_tab_csv(self) -> None:
+        self._export_data_tab("csv")
 
     def _export_data_tab_json(self) -> None:
-        tbl = self.current_table or "data"
-        path, _ = QFileDialog.getSaveFileName(self, "Export Table Data JSON", f"{tbl}.json", "JSON (*.json)")
-        if path:
-            export_result_json(path, self._current_data_headers, self._current_data_rows)
-            self.services.notifications.push("ok", "Export", f"{len(self._current_data_rows)} rows → {path}")
+        self._export_data_tab("json")
 
     def _export_schema_csv(self) -> None:
         tbl = self.current_table or "schema"
@@ -1118,16 +1201,7 @@ class DatabaseManagerWidget(QWidget):
         self.services.notifications.push("ok", "Export", f"DDL exported to {path}")
 
     def _export_query_markdown(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export Markdown", "results.md", "Markdown (*.md)")
-        if not path:
-            return
-        lines = ["| " + " | ".join(self._last_headers) + " |"]
-        lines.append("| " + " | ".join(["---"] * len(self._last_headers)) + " |")
-        for r in self._last_rows[:1000]:
-            lines.append("| " + " | ".join(str(v or "").replace("|", "\\|") for v in r) + " |")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-        self.services.notifications.push("ok", "Export", f"Markdown exported to {path}")
+        self.export_result("markdown")
 
     def _copy_results_to_clipboard(self) -> None:
         lines = ["\t".join(self._last_headers)]
@@ -1560,9 +1634,11 @@ class DatabaseManagerWidget(QWidget):
                     self.workbench_tabs.setCurrentIndex(3),
                 )
             )
-            menu.addAction("📤 Export Database (SQL Dump)").triggered.connect(
-                lambda: self.export_database(db)
-            )
+            export_db_sub = menu.addMenu("📤 Export Database")
+            for fmt, label, _suffix, _flt in DATABASE_EXPORT_FORMATS:
+                export_db_sub.addAction(label).triggered.connect(
+                    lambda _checked=False, d=db, f=fmt: self.export_database(d, fmt=f)
+                )
             menu.addSeparator()
             menu.addAction("🆕 Create Table in this DB").triggered.connect(
                 lambda: self.create_table_dialog(db)
@@ -1627,12 +1703,11 @@ class DatabaseManagerWidget(QWidget):
                 )
             )
             menu.addSeparator()
-            menu.addAction("📤 Export Table (CSV)").triggered.connect(
-                lambda: self.export_table_csv(db, table)
-            )
-            menu.addAction("📤 Export Table (SQL INSERT)").triggered.connect(
-                lambda: self.export_table_sql(db, table)
-            )
+            export_tbl_sub = menu.addMenu("📤 Export Table")
+            for fmt, label, _flt in TABLE_EXPORT_FORMATS:
+                export_tbl_sub.addAction(label).triggered.connect(
+                    lambda _checked=False, d=db, t=table, f=fmt: self.export_table(d, t, f)
+                )
             menu.addSeparator()
             menu.addAction("📋 Open Table in Isolated Tab").triggered.connect(
                 lambda: self._open_table_detail(db, table)
@@ -1736,109 +1811,192 @@ class DatabaseManagerWidget(QWidget):
         self._update_export_buttons_state()
 
     # ============================================================
-    # Export Helpers
+    # Export Helpers (Async Background Workers + Multi-Format)
     # ============================================================
 
-    def export_result(self, fmt: str) -> None:
+    _TABLE_FMT_SUFFIX: dict[str, str] = {
+        "csv": ".csv",
+        "tsv": ".tsv",
+        "xlsx": ".xlsx",
+        "json": ".json",
+        "jsonl": ".jsonl",
+        "sql": "_data.sql",
+        "sqlite": ".db",
+        "markdown": ".md",
+        "html": ".html",
+        "xml": ".xml",
+    }
+
+    def _table_format_dialog_spec(
+        self, base_name: str, fmt: str
+    ) -> tuple[str, str, str]:
+        norm = str(fmt or "csv").lower()
+        for key, label, flt in TABLE_EXPORT_FORMATS:
+            if key == norm:
+                suffix = self._TABLE_FMT_SUFFIX.get(key, f".{key}")
+                return label, flt, f"{base_name or 'export'}{suffix}"
+        return "CSV", "CSV Files (*.csv)", f"{base_name or 'export'}.csv"
+
+    def _database_format_dialog_spec(
+        self, db_name: str, fmt: str
+    ) -> tuple[str, str, str]:
+        norm = str(fmt or "sql").lower()
+        for key, label, suffix, flt in DATABASE_EXPORT_FORMATS:
+            if key == norm:
+                return label, flt, f"{db_name or 'database'}{suffix}"
+        return "SQL Dump", "SQL Files (*.sql)", f"{db_name or 'database'}_dump.sql"
+
+    def _start_export_worker(
+        self,
+        *,
+        mode: str,
+        path: str,
+        fmt: str,
+        title: str,
+        description: str,
+        cfg: Optional[dict[str, Any]] = None,
+        db_name: str = "",
+        table_name: str = "",
+        fqn: str = "",
+        backend: str = "",
+        headers: Optional[list[str]] = None,
+        rows: Optional[list[list[Any]]] = None,
+    ) -> DbExportWorker:
+        worker = DbExportWorker(
+            mode=mode,
+            path=path,
+            fmt=fmt,
+            cfg=cfg,
+            session_manager=self.session_manager if mode in ("database", "table") else None,
+            db_name=db_name,
+            table_name=table_name,
+            fqn=fqn,
+            backend=backend or self._backend_name(),
+            headers=headers,
+            rows=rows,
+            parent=self,
+        )
+
+        tasks = getattr(self.services, "tasks", None)
+        task = (
+            tasks.start_task(
+                title=title,
+                description=description,
+                category="Database",
+                cancel_cb=worker.cancel,
+                progress=-1,
+            )
+            if tasks is not None
+            else None
+        )
+
+        def _on_progress(pct: int, msg: str) -> None:
+            if task is not None and tasks is not None:
+                tasks.update_task(task.id, progress=pct, description=msg)
+
+        def _on_finished(_out_path: str, summary: str) -> None:
+            if task is not None and tasks is not None:
+                tasks.finish_task(task.id)
+            self.services.notifications.push("ok", "Database Export", summary)
+            self.services.audit("DB_EXPORT", summary)
+
+        def _on_failed(err: str) -> None:
+            if task is not None and tasks is not None:
+                tasks.finish_task(task.id, error=err)
+            self.services.notifications.push("error", "Database Export Failed", err)
+            self.services.emit_log("DB", f"Export failed: {err}", "ERROR")
+
+        def _cleanup() -> None:
+            self._workers = [w for w in self._workers if w is not worker and w.isRunning()]
+            worker.deleteLater()
+
+        worker.progress_changed.connect(_on_progress)
+        worker.export_finished.connect(_on_finished)
+        worker.export_failed.connect(_on_failed)
+        worker.finished.connect(_cleanup)
+
+        self._workers = [w for w in self._workers if w.isRunning()] + [worker]
+        worker.start()
+        return worker
+
+    def export_result(self, fmt: str = "csv") -> None:
         if not self._last_headers or not self._last_rows:
             QMessageBox.information(self, "Export", "No data. Run a SELECT first.")
             return
 
-        if fmt == "csv":
-            path, _ = QFileDialog.getSaveFileName(
-                self, "Export CSV", "results.csv", "CSV Files (*.csv)"
-            )
-            if not path:
-                return
-            export_result_csv(path, self._last_headers, self._last_rows)
+        label, flt, default_name = self._table_format_dialog_spec("results", fmt)
+        path, _ = QFileDialog.getSaveFileName(self, f"Export Query Results ({label})", default_name, flt)
+        if not path:
+            return
 
-        else:
-            path, _ = QFileDialog.getSaveFileName(
-                self, "Export JSON", "results.json", "JSON Files (*.json)"
-            )
-            if not path:
-                return
-            export_result_json(path, self._last_headers, self._last_rows)
+        self._start_export_worker(
+            mode="dataset",
+            path=path,
+            fmt=fmt,
+            title=f"Export Query Results ({fmt.upper()})",
+            description=f"{len(self._last_rows)} rows → {os.path.basename(path)}",
+            table_name="results",
+            backend=self._backend_name(),
+            headers=self._last_headers,
+            rows=self._last_rows,
+        )
 
-        self.services.notifications.push(
-            "ok", "Export", f"{len(self._last_rows)} rows → {path}"
+    def export_table(
+        self, db_name: str, table_name: str, fmt: str = "csv"
+    ) -> Optional[DbExportWorker]:
+        label, flt, default_name = self._table_format_dialog_spec(table_name, fmt)
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"Export Table '{table_name}' ({label})", default_name, flt
+        )
+        if not path:
+            return None
+
+        backend = self._backend_name()
+        fqn = f"{self._qident(db_name)}.{self._qident(table_name)}" if db_name else self._qident(table_name)
+        return self._start_export_worker(
+            mode="table",
+            path=path,
+            fmt=fmt,
+            title=f"Export Table '{table_name}' ({fmt.upper()})",
+            description=f"Queued export of {db_name}.{table_name}",
+            cfg=self._build_cfg(),
+            db_name=db_name,
+            table_name=table_name,
+            fqn=fqn,
+            backend=backend,
         )
 
     def export_table_csv(self, db_name: str, table_name: str) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Table CSV", f"{table_name}.csv", "CSV (*.csv)"
-        )
-        if not path:
-            return
-
-        fqn = f"{self._qident(db_name)}.{self._qident(table_name)}"
-        worker = DbWorker(
-            self.session_manager,
-            self._build_cfg(),
-            mode="run_query",
-            query=f"SELECT * FROM {fqn} LIMIT 10000;",
-            db_name=db_name,
-        )
-
-        def save(headers, rows):
-            try:
-                export_result_csv(path, headers, rows)
-                self.services.notifications.push(
-                    "ok", "Export", f"{len(rows)} rows → {path}"
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Export Error", str(e))
-
-        worker.data_loaded.connect(save)
-        worker.error_occurred.connect(self.on_db_error)
-        worker.start()
-        self._workers.append(worker)
+        self.export_table(db_name, table_name, "csv")
 
     def export_table_sql(self, db_name: str, table_name: str) -> None:
+        self.export_table(db_name, table_name, "sql")
+
+    def export_database(
+        self, db_name: str, fmt: str = "sql"
+    ) -> Optional[DbExportWorker]:
+        schema = db_name or ("main" if self._backend_name() == "sqlite" else "")
+        if not schema:
+            QMessageBox.information(self, "Export Database", "Select a database schema first.")
+            return None
+
+        label, flt, default_name = self._database_format_dialog_spec(schema, fmt)
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Table SQL", f"{table_name}_data.sql", "SQL Files (*.sql)"
+            self, f"Export Database '{schema}' ({label})", default_name, flt
         )
         if not path:
-            return
+            return None
 
-        backend = self._backend_name()
-        fqn = f"{self._qident(db_name)}.{self._qident(table_name)}"
-        worker = DbWorker(
-            self.session_manager,
-            self._build_cfg(),
-            mode="run_query",
-            query=f"SELECT * FROM {fqn} LIMIT 10000;",
-            db_name=db_name,
+        return self._start_export_worker(
+            mode="database",
+            path=path,
+            fmt=fmt,
+            title=f"Export Database '{schema}' ({fmt.upper()})",
+            description=f"Running background export to {os.path.basename(path)}",
+            cfg=self._build_cfg(),
+            db_name=schema,
+            backend=self._backend_name(),
         )
-
-        def save(headers, rows):
-            try:
-                export_table_sql(path, fqn, headers, rows, backend, self._qident)
-                self.services.notifications.push(
-                    "ok", "Export", f"{len(rows)} INSERT statements → {path}"
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Export Error", str(e))
-
-        worker.data_loaded.connect(save)
-        worker.error_occurred.connect(self.on_db_error)
-        worker.start()
-        self._workers.append(worker)
-
-    def export_database(self, db_name: str) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Database", f"{db_name}_dump.sql", "SQL Files (*.sql)"
-        )
-        if not path:
-            return
-
-        try:
-            export_database(self._build_cfg(), db_name, path)
-            self.services.notifications.push(
-                "ok", "Export", f"Database '{db_name}' exported to {path}"
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Export Error", str(e))
 
     # ============================================================
     # Dialogs & Confirmation
@@ -1895,7 +2053,7 @@ class DatabaseManagerWidget(QWidget):
     def _open_table_detail(self, db_name: str, table_name: str) -> None:
         main_window = self.main_window
         if main_window and hasattr(main_window, "tabs"):
-            title = f"📋 {db_name}.{table_name}"
+            title = f"{db_name}.{table_name}"
             for i in range(main_window.tabs.count()):
                 if main_window.tabs.tabText(i) == title:
                     main_window.tabs.setCurrentIndex(i)
@@ -1909,7 +2067,7 @@ class DatabaseManagerWidget(QWidget):
                 table_name,
                 main_window,
             )
-            idx = main_window.tabs.addTab(detail, title)
+            idx = main_window.tabs.addTab(detail, get_icon("table", size=16), title)
             main_window.tabs.setCurrentIndex(idx)
 
     # ============================================================
@@ -1925,7 +2083,7 @@ class DatabaseManagerWidget(QWidget):
         layout = QVBoxLayout(dlg)
 
         lw = QListWidget()
-        lw.setFont(QFont("JetBrains Mono, Consolas", 10))
+        lw.setFont(mono_font(10))
 
         for query in self.query_history:
             lw.addItem(query)
@@ -2063,3 +2221,22 @@ class DatabaseManagerWidget(QWidget):
             "ERROR",
         )
         QMessageBox.critical(self, "Database Error", str(err))
+
+    def stop_all_workers(self) -> None:
+        """Cancel and wait on active background DB query/export workers."""
+        for worker in list(getattr(self, "_workers", [])):
+            try:
+                if hasattr(worker, "cancel"):
+                    worker.cancel()
+                if worker.isRunning():
+                    worker.wait(1500)
+            except Exception:
+                pass
+        try:
+            self.session_manager.stop_all()
+        except Exception:
+            pass
+
+    def closeEvent(self, event) -> None:
+        self.stop_all_workers()
+        super().closeEvent(event)

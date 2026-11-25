@@ -43,6 +43,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
 from admin_suite.sysadmin.commands import (
     build_journalctl_cmd,
     container_inspect_cmd,
@@ -587,7 +588,7 @@ class JournalDetailDialog(QDialog):
         layout.addWidget(QLabel("<b>Full Log Message:</b>"))
         msg_edit = QPlainTextEdit(record.get("msg", ""))
         msg_edit.setReadOnly(True)
-        msg_edit.setFont(QFont("JetBrains Mono, Consolas", 10))
+        msg_edit.setFont(mono_font(10))
         layout.addWidget(msg_edit, 1)
 
         btn_row = QHBoxLayout()
@@ -1048,7 +1049,7 @@ class ContainerLogsDialog(QDialog):
         # Log viewer
         self.editor = QPlainTextEdit()
         self.editor.setReadOnly(True)
-        self.editor.setFont(QFont("JetBrains Mono, Consolas, Courier", 10))
+        self.editor.setFont(mono_font(10))
         self.editor.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: {theme.get('panel', '#181b20')};
@@ -1131,7 +1132,7 @@ class ContainerInspectDialog(QDialog):
 
         self.editor = QPlainTextEdit()
         self.editor.setReadOnly(True)
-        self.editor.setFont(QFont("JetBrains Mono, Consolas, Courier", 10))
+        self.editor.setFont(mono_font(10))
         layout.addWidget(self.editor, 1)
 
         self._fetch()
@@ -1734,7 +1735,7 @@ class DockerfileBuildDialog(QDialog):
         e_lay.addLayout(t_row)
 
         self.editor = QPlainTextEdit()
-        self.editor.setFont(QFont("JetBrains Mono, Consolas, Courier", 10))
+        self.editor.setFont(mono_font(10))
         self.editor.setPlaceholderText("# Paste or type Dockerfile instructions here...\nFROM alpine:latest\nCMD [\"echo\", \"hello\"]")
         self.editor.setStyleSheet(f"background-color: {theme.get('panel', '#181b20')}; color: #d1d5db;")
         e_lay.addWidget(self.editor, 1)
@@ -1918,7 +1919,7 @@ class ContainerConsoleDialog(QDialog):
         # Output console
         self.console_out = QPlainTextEdit()
         self.console_out.setReadOnly(True)
-        self.console_out.setFont(QFont("JetBrains Mono, Consolas, Courier", 10))
+        self.console_out.setFont(mono_font(10))
         self.console_out.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: {theme.get('panel', '#181b20')};
@@ -2544,7 +2545,7 @@ class SysAdminContainersWidget(QWidget):
         l_lay.addWidget(QLabel("<b>docker-compose.yml Configuration:</b>"))
 
         self.compose_editor = QPlainTextEdit()
-        self.compose_editor.setFont(QFont("JetBrains Mono, Consolas, Courier", 10))
+        self.compose_editor.setFont(mono_font(10))
         self.compose_editor.setPlaceholderText("# Write or paste your docker-compose.yml here, or select a template above...")
         self.compose_editor.setStyleSheet(
             f"background-color: {self.theme.get('panel', '#181b20')}; color: #d1d5db; border: 1px solid {self.theme.get('border', '#333')}; border-radius: 4px;"
@@ -2605,7 +2606,7 @@ class SysAdminContainersWidget(QWidget):
         r_lay.addWidget(QLabel("<b>Compose Execution Output:</b>"))
         self.compose_output = QPlainTextEdit()
         self.compose_output.setReadOnly(True)
-        self.compose_output.setFont(QFont("JetBrains Mono, Consolas, Courier", 10))
+        self.compose_output.setFont(mono_font(10))
         self.compose_output.setStyleSheet(
             f"background-color: {self.theme.get('panel', '#181b20')}; color: #d1d5db; border: 1px solid {self.theme.get('border', '#333')}; border-radius: 4px;"
         )
@@ -4376,7 +4377,7 @@ class UserDetailDialog(QDialog):
         layout.addWidget(QLabel("<b>Raw /etc/passwd Entry:</b>"))
         raw_edit = QPlainTextEdit(record.get("raw_line", ""))
         raw_edit.setReadOnly(True)
-        raw_edit.setFont(QFont("JetBrains Mono, Consolas, Monospace", 10))
+        raw_edit.setFont(mono_font(10))
         raw_edit.setMaximumHeight(65)
         layout.addWidget(raw_edit)
 
@@ -4783,7 +4784,7 @@ class ServiceLogsDialog(QDialog):
 
         self.output_edit = QPlainTextEdit("Fetching status and logs...")
         self.output_edit.setReadOnly(True)
-        self.output_edit.setFont(QFont("JetBrains Mono, Consolas, Monospace", 10))
+        self.output_edit.setFont(mono_font(10))
         layout.addWidget(self.output_edit, 1)
 
         btn_row = QHBoxLayout()
@@ -5245,7 +5246,7 @@ class ProcessDetailDialog(QDialog):
         l_proc = QVBoxLayout(tab_proc)
         self.proc_edit = QPlainTextEdit("Fetching process details from /proc...")
         self.proc_edit.setReadOnly(True)
-        self.proc_edit.setFont(QFont("JetBrains Mono, Consolas, Monospace", 10))
+        self.proc_edit.setFont(mono_font(10))
         l_proc.addWidget(self.proc_edit, 1)
 
         btn_ref_proc = QPushButton("🔄 Refresh Inspection")

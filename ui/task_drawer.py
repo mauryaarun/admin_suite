@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.icons import get_icon, style_icon_button
 from admin_suite.core.task_manager import BackgroundTask, TaskManager
 
 

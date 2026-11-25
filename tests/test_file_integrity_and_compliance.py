@@ -12,7 +12,7 @@ pkg_parent = str(Path(__file__).resolve().parent.parent.parent)
 if pkg_parent not in sys.path:
     sys.path.insert(0, pkg_parent)
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from admin_suite.services import AppServices
 from admin_suite.security.commands import SecurityCommands, SecurityParsers
 from admin_suite.security.file_integrity import FileIntegrityWidget, WhitelistBinaryDialog
@@ -642,4 +642,149 @@ def test_admin_console_overview_first_then_sequential_queue(qapp, services):
 
     console.stop_all_workers()
     assert console._bg_queue_running is False
+
+
+# --------------------------------------------------------------------
+# 7. Compliance Enhancements: Auto-discovery, Profile Population,
+#    ~/reports Folder, Remediation Fix Script & Height Resizing Tests
+# --------------------------------------------------------------------
+
+def test_openscap_auto_find_datastreams(qapp, test_theme):
+    """Test auto-discovery of SCAP datastreams across RHEL and Debian locations."""
+    ran_cmds = []
+
+    def mock_run_cmd(cmd, callback):
+        ran_cmds.append(cmd)
+        if "OPENSCAP_PROBE" in cmd:
+            callback(
+                "=== OPENSCAP_PROBE ===\nINSTALLED:yes\n"
+                "=== DATASTREAMS ===\n"
+                "DS:/usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml\n"
+                "DS:/usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml\n"
+                "DS:/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml\n"
+                "=== HTML_DIR ===\nHTML_DIR:/var/www/html\n"
+                "=== REPORTS_DIR ===\nREPORTS_DIR:/home/user/reports\n",
+                "",
+                0,
+            )
+        elif "OS_RELEASE" in cmd:
+            callback(
+                "=== OS_RELEASE ===\nID=debian\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\n"
+                "=== PKG_MANAGER ===\nPKG_MGR:apt-get\n=== ARCH ===\nx86_64\n",
+                "",
+                0,
+            )
+        elif "Profiles:" in cmd or "oscap info" in cmd:
+            callback(
+                "Profiles:\n\tTitle: CIS Debian 12 Benchmark Level 1 Server\n\t\tId: xccdf_org.ssgproject.content_profile_cis_level1_server\n"
+                "Profiles:\n\tTitle: Standard System Security Profile for Debian 12\n\t\tId: xccdf_org.ssgproject.content_profile_standard\n",
+                "",
+                0,
+            )
+        else:
+            callback("OK", "", 0)
+
+    widget = ComplianceAuditorWidget(run_cmd=mock_run_cmd, theme=test_theme)
+    widget.refresh()
+
+    # Datastream combo should have discovered datastreams
+    items = [widget.ds_combo.itemText(i) for i in range(widget.ds_combo.count())]
+    assert any("ssg-debian12-ds.xml" in it for it in items)
+    assert any("ssg-debian11-ds.xml" in it for it in items)
+    assert any("ssg-rhel9-ds.xml" in it for it in items)
+
+    # Debian 12 should be auto-selected matching the OS
+    assert "ssg-debian12-ds.xml" in widget.ds_combo.currentText()
+    assert "Debian" in widget.lbl_ds_match.text() or "debian12" in widget.lbl_ds_match.text().lower()
+
+
+def test_openscap_datastream_changed_populates_profiles(qapp, test_theme):
+    """Test that selecting a datastream XML file dynamically populates compliance profiles."""
+    ran_cmds = []
+
+    def mock_run_cmd(cmd, callback):
+        ran_cmds.append(cmd)
+        if "ssg-rhel9-ds.xml" in cmd:
+            callback(
+                "Profiles:\n\tTitle: CIS Red Hat Enterprise Linux 9 Benchmark\n\t\tId: xccdf_org.ssgproject.content_profile_cis\n"
+                "Profiles:\n\tTitle: DISA STIG for RHEL 9\n\t\tId: xccdf_org.ssgproject.content_profile_stig\n",
+                "",
+                0,
+            )
+        else:
+            callback("OK", "", 0)
+
+    widget = ComplianceAuditorWidget(run_cmd=mock_run_cmd, theme=test_theme)
+    widget.ds_combo.addItem("/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+    widget.ds_combo.setCurrentText("/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+
+    # Verify profile combo populated from XML
+    profiles = [widget.profile_combo.itemText(i) for i in range(widget.profile_combo.count())]
+    assert any("CIS Red Hat Enterprise Linux 9" in p for p in profiles)
+    assert any("DISA STIG" in p for p in profiles)
+
+
+def test_openscap_reports_directory_default(qapp, test_theme):
+    """Test report path defaults to ~/reports and creates the directory."""
+    def mock_run_cmd(cmd, callback):
+        callback("OK", "", 0)
+
+    widget = ComplianceAuditorWidget(run_cmd=mock_run_cmd, theme=test_theme)
+    rep_path = widget.report_path_edit.text()
+    assert "reports" in rep_path
+    assert rep_path.endswith(".html")
+
+
+def test_openscap_remediation_fix_script_generation(qapp, test_theme, monkeypatch):
+    """Test fix remediation script generation option and commands."""
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.StandardButton.Ok)
+    ran_cmds = []
+
+    def mock_run_cmd(cmd, callback):
+        ran_cmds.append(cmd)
+        callback("#!/bin/bash\n# Remediation fix script content\necho 'Remediating...'", "", 0)
+
+    widget = ComplianceAuditorWidget(run_cmd=mock_run_cmd, theme=test_theme)
+    widget.ds_combo.addItem("/usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml")
+    widget.ds_combo.setCurrentText("/usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml")
+    widget.profile_combo.addItem("CIS Server (xccdf_org.ssgproject.content_profile_cis)", "xccdf_org.ssgproject.content_profile_cis")
+
+    # Generate fix script on demand
+    widget._generate_fix_script()
+
+    assert any("oscap xccdf generate fix" in c for c in ran_cmds)
+    assert any("remediation-fix.sh" in c for c in ran_cmds)
+    assert "Remediating..." in widget.oscap_raw_edit.toPlainText()
+
+
+def test_compliance_terminal_height_resizing(qapp, test_theme):
+    """Test terminal output height resizing via quick-height buttons and splitter."""
+    widget = ComplianceAuditorWidget(run_cmd=lambda c, cb: cb("OK", "", 0), theme=test_theme)
+
+    # Initial splitter sizes
+    widget.oscap_splitter.resize(800, 600)
+    sizes = widget.oscap_splitter.sizes()
+    assert len(sizes) == 2
+
+    # Test compact preset
+    widget._set_output_height(widget.oscap_splitter, "compact")
+    compact_h = widget.oscap_splitter.sizes()[1]
+
+    # Test normal preset
+    widget._set_output_height(widget.oscap_splitter, "normal")
+    normal_h = widget.oscap_splitter.sizes()[1]
+    assert normal_h >= compact_h
+
+    # Test large preset
+    widget._set_output_height(widget.oscap_splitter, "large")
+    large_h = widget.oscap_splitter.sizes()[1]
+    assert large_h >= normal_h
+
+    # Test maximize / restore
+    widget._toggle_oscap_maximize()
+    assert widget._oscap_is_maximized is True
+    assert widget.oscap_splitter.sizes()[1] > widget.oscap_splitter.sizes()[0]
+
+    widget._toggle_oscap_maximize()
+    assert widget._oscap_is_maximized is False
 

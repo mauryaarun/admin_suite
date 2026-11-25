@@ -7,7 +7,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -24,6 +23,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import style_icon_button
 from admin_suite.ansible.command_sets import CommandSetStore
 from admin_suite.ansible.multihost import MultiHostExecThread
 
@@ -50,7 +51,7 @@ class MultiLineInputDialog(QDialog):
         layout.addWidget(QLabel(label))
 
         self.edit = QPlainTextEdit()
-        self.edit.setFont(QFont("JetBrains Mono, Consolas", 11))
+        self.edit.setFont(mono_font(11))
         self.edit.setPlainText(text)
 
         layout.addWidget(self.edit, 1)
@@ -190,9 +191,13 @@ class AnsibleTab(QWidget):
 
         cmd_row.addWidget(self.custom_cmd, 1)
 
-        run_btn = QPushButton("▶ Run on Selected")
-        run_btn.setStyleSheet(
-            f"background:{theme['accent']};color:white;font-weight:bold;"
+        run_btn = QPushButton()
+        style_icon_button(
+            run_btn,
+            "play",
+            "Run command on selected hosts",
+            icon_only=True,
+            color="#22c55e",
         )
         run_btn.clicked.connect(self.run_on_selected)
 
@@ -203,7 +208,7 @@ class AnsibleTab(QWidget):
         # Output.
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
-        self.output.setFont(QFont("JetBrains Mono, Consolas", 11))
+        self.output.setFont(mono_font(11))
 
         layout.addWidget(self.output, 1)
 

@@ -10,16 +10,21 @@ import subprocess
 import sys
 from typing import Any, Optional
 
-from PyQt6.QtCore import QByteArray, QMimeData, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import (
+    QByteArray, QMimeData, QStringListModel, Qt, QUrl, pyqtSignal,
+)
 from PyQt6.QtGui import QDrag, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QHBoxLayout, QHeaderView, QInputDialog,
-    QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QCompleter, QHBoxLayout, QHeaderView,
+    QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from admin_suite.core.icons import style_icon_button
 from admin_suite.sftp.models import SftpAction, SftpTask
 from admin_suite.sftp.worker import SftpWorker
+
+MAX_PATH_HISTORY = 5
 
 # Custom role for numeric-aware sorting
 _ROLE_SORT = Qt.ItemDataRole.UserRole + 1
@@ -64,6 +69,92 @@ class _SortableItem(QTreeWidgetItem):
         except TypeError:
             return super().__lt__(other)
 
+
+class PathHistoryBox(QComboBox):
+    """Editable path combo box retaining the most recent paths with autocomplete suggestions."""
+
+    def __init__(
+        self,
+        max_items: int = MAX_PATH_HISTORY,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._max_items = max(1, int(max_items))
+        self._history: list[str] = []
+
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.setDuplicatesEnabled(False)
+        self.setMaxVisibleItems(self._max_items)
+        self.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.setMinimumContentsLength(12)
+
+        self._completer_model = QStringListModel([], self)
+        self._completer = QCompleter(self._completer_model, self)
+        self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.setCompleter(self._completer)
+
+    @property
+    def returnPressed(self):
+        return self.lineEdit().returnPressed
+
+    def text(self) -> str:
+        return self.currentText()
+
+    def setText(self, path: str) -> None:
+        text = str(path or "")
+        self.blockSignals(True)
+        le = self.lineEdit()
+        if le is not None:
+            le.blockSignals(True)
+        self.setEditText(text)
+        if le is not None:
+            le.blockSignals(False)
+        self.blockSignals(False)
+
+    def history(self) -> list[str]:
+        return list(self._history)
+
+    def _sync_items(self) -> None:
+        current = self.text()
+        self.blockSignals(True)
+        le = self.lineEdit()
+        if le is not None:
+            le.blockSignals(True)
+        self.clear()
+        for entry in self._history:
+            self.addItem(entry)
+        self.setEditText(current)
+        if le is not None:
+            le.blockSignals(False)
+        self.blockSignals(False)
+        self._completer_model.setStringList(self._history)
+
+    def set_history(self, paths: list[str]) -> None:
+        cleaned: list[str] = []
+        for raw in paths or []:
+            p = str(raw or "").strip()
+            if p and p not in cleaned:
+                cleaned.append(p)
+            if len(cleaned) >= self._max_items:
+                break
+        self._history = cleaned
+        self._sync_items()
+
+    def record_path(self, path: str) -> list[str]:
+        clean = str(path or "").strip()
+        if not clean:
+            return list(self._history)
+        updated = [clean] + [p for p in self._history if p != clean]
+        self._history = updated[: self._max_items]
+        self._sync_items()
+        return list(self._history)
+
+
 class FileBrowserPanel(QWidget):
     """Local or remote file browser panel."""
     file_action = pyqtSignal(str, str, str)
@@ -104,25 +195,31 @@ class FileBrowserPanel(QWidget):
         
         # ---- path bar ----
         pb = QHBoxLayout()
-        up = QPushButton("⬆")
-        up.setFixedWidth(30)
-        up.setToolTip("Go up one level")
+        up = QPushButton()
+        style_icon_button(up, "arrow_up", "Go up one level", icon_only=True)
         up.clicked.connect(self.go_up)
-        
-        home = QPushButton("🏠")
-        home.setFixedWidth(30)
-        home.setToolTip("Go to home / root")
+
+        home = QPushButton()
+        style_icon_button(home, "home", "Go to home / root", icon_only=True)
         home.clicked.connect(self.go_home)
-        
-        rf = QPushButton("🔄")
-        rf.setFixedWidth(30)
-        rf.setToolTip("Refresh (F5)")
+
+        rf = QPushButton()
+        style_icon_button(rf, "refresh", "Refresh (F5)", icon_only=True)
         rf.clicked.connect(self.refresh)
         
-        self.path_input = QLineEdit(self.current_path)
+        self.path_input = PathHistoryBox(max_items=MAX_PATH_HISTORY)
+        self.path_input.setText(self.current_path)
         self.path_input.returnPressed.connect(
             lambda: self.navigate_to_path(self.path_input.text())
         )
+        self.path_input.textActivated.connect(self.navigate_to_path)
+        self._load_path_history()
+        if (
+            self.mode == "local"
+            and not self.path_input.history()
+            and os.path.isdir(self.current_path)
+        ):
+            self._record_path_history(self.current_path)
         
         pb.addWidget(up)
         pb.addWidget(home)
@@ -181,8 +278,50 @@ class FileBrowserPanel(QWidget):
         ren_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         ren_sc.activated.connect(self._rename_current)
         
+        self._skip_initial_history = bool(self.path_input.history())
         if mode == "local":
             self.refresh()
+
+    def _history_storage_key(self) -> str:
+        if self.mode == "local":
+            return "local"
+        host = str(self.host_info.get("host") or "").strip()
+        user = str(self.host_info.get("user") or "").strip()
+        if host and user:
+            return f"remote:{user}@{host}"
+        if host:
+            return f"remote:{host}"
+        return "remote"
+
+    def _load_path_history(self) -> None:
+        cfg = getattr(self.services, "config", None)
+        if cfg is None or not hasattr(self, "path_input"):
+            return
+        raw = cfg.get("sftp_path_history", {})
+        if not isinstance(raw, dict):
+            return
+        paths = raw.get(self._history_storage_key(), [])
+        if isinstance(paths, list):
+            self.path_input.set_history(paths)
+
+    def _record_path_history(self, path: str) -> None:
+        if not hasattr(self, "path_input"):
+            return
+        if getattr(self, "_skip_initial_history", False):
+            self._skip_initial_history = False
+            return
+        updated = self.path_input.record_path(path)
+        cfg = getattr(self.services, "config", None)
+        if cfg is None:
+            return
+        raw = cfg.get("sftp_path_history", {})
+        store = dict(raw) if isinstance(raw, dict) else {}
+        store[self._history_storage_key()] = updated
+        cfg.set("sftp_path_history", store)
+        try:
+            cfg.save()
+        except Exception:
+            pass
 
     def configure_remote(
         self, host: str, port: int, user: str, creds, *,
@@ -197,6 +336,8 @@ class FileBrowserPanel(QWidget):
         self.home_dir = user_home
         self.current_path = user_home
         self.path_input.setText(user_home)
+        self._load_path_history()
+        self._skip_initial_history = bool(self.path_input.history())
 
     # ------------------------------------------------------------------
     # Navigation
@@ -315,6 +456,7 @@ class FileBrowserPanel(QWidget):
                 except Exception:
                     pass
             entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+            self._record_path_history(path)
             self._fill_tree(entries, "local")
         except Exception as ex:
             self.status_label.setText(f"Error: {ex}")
@@ -347,6 +489,7 @@ class FileBrowserPanel(QWidget):
     def _on_remote_listing(self, entries: list[dict[str, Any]], path: str) -> None:
         self.current_path = path
         self.path_input.setText(path)
+        self._record_path_history(path)
         self._fill_tree(entries, "remote")
 
     @staticmethod

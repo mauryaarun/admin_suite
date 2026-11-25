@@ -5,7 +5,7 @@ import subprocess
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QColor, QCursor, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
+from admin_suite.core.icons import style_icon_button
 from admin_suite.ssh.remote_exec import RemoteExecThread
 from admin_suite.ui.dialogs import SudoCredentialsDialog, ensure_sudo_credentials
 from admin_suite.sysadmin.commands import SYSADMIN_CMDS, SYSADMIN_SECTIONS
@@ -63,26 +65,45 @@ class LocalExecThread(QThread):
         self.cmd = cmd
         self.timeout = timeout
         self.sudo_password = sudo_password
+        self._proc: Optional[subprocess.Popen] = None
+        self._stopped = False
+
+    def stop(self) -> None:
+        self._stopped = True
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
 
     def run(self) -> None:
         try:
-            p = subprocess.Popen(
+            self._proc = subprocess.Popen(
                 ["bash", "-c", self.cmd],
                 stdin=subprocess.PIPE if self.sudo_password else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            out, err = p.communicate(
+            out, err = self._proc.communicate(
                 input=(self.sudo_password + "\n") if self.sudo_password else None,
                 timeout=self.timeout,
             )
-            combined = out + (("\n" + err) if err else "")
-            self.finished_cmd.emit(combined, p.returncode)
+            combined = (out or "") + (("\n" + err) if err else "")
+            rc = self._proc.returncode if self._proc.returncode is not None else 0
+            if not self._stopped:
+                self.finished_cmd.emit(combined, rc)
         except subprocess.TimeoutExpired:
-            self.finished_cmd.emit("[timeout]\n", 124)
+            if self._proc is not None:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            if not self._stopped:
+                self.finished_cmd.emit("[timeout]\n", 124)
         except Exception as exc:
-            self.finished_cmd.emit(f"[error] {exc}\n", 1)
+            if not self._stopped:
+                self.finished_cmd.emit(f"[error] {exc}\n", 1)
 
 
 # ------------------------------------------------------------------
@@ -103,6 +124,9 @@ class SysAdminTab(QWidget):
 
         # Keep references to workers to prevent garbage collection
         self._workers: list[QThread] = []
+        self._worker_meta: dict[int, dict[str, Any]] = {}
+        self._stopped = False
+        self._loading = False
 
         theme = self.services.theme.current
         self.theme = theme
@@ -132,15 +156,20 @@ class SysAdminTab(QWidget):
         self.sudo_chk.setChecked(True)
         sudo_row.addWidget(self.sudo_chk, 1)
 
-        self.sudo_btn = QPushButton("🔑")
-        self.sudo_btn.setToolTip("Configure Root / Sudo credentials for this profile")
-        self.sudo_btn.setFixedWidth(28)
+        self.sudo_btn = QPushButton()
+        style_icon_button(
+            self.sudo_btn,
+            "key",
+            "Configure Root / Sudo credentials for this profile",
+            icon_only=True,
+        )
         self.sudo_btn.clicked.connect(self._configure_sudo_credentials)
         sudo_row.addWidget(self.sudo_btn)
 
         left.addLayout(sudo_row)
 
-        self.refresh_btn = QPushButton("🔄 Refresh")
+        self.refresh_btn = QPushButton()
+        style_icon_button(self.refresh_btn, "refresh", "Refresh active section", icon_only=True)
         self.refresh_btn.clicked.connect(self._refresh_current)
         left.addWidget(self.refresh_btn)
 
@@ -183,7 +212,7 @@ class SysAdminTab(QWidget):
             # Create raw CLI text view for every section
             raw_text = QPlainTextEdit()
             raw_text.setReadOnly(True)
-            raw_text.setFont(QFont("JetBrains Mono, Consolas", 11))
+            raw_text.setFont(mono_font(11))
             raw_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
             ReportExporter.attach_export_context_menu(raw_text)
             self.raw_text_views[section] = raw_text
@@ -344,16 +373,133 @@ class SysAdminTab(QWidget):
                 ReportExporter.export_excerpt_dialog(self, selected, f"{name.lower()}_excerpt.txt")
 
     def _set_loading(self, loading: bool) -> None:
+        if self._stopped and loading:
+            return
         self.nav.setEnabled(not loading)
         self.refresh_btn.setEnabled(not loading)
         self.sudo_chk.setEnabled(not loading)
-        if loading:
+        if loading and not self._loading:
+            self._loading = True
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        else:
+        elif not loading and self._loading:
+            self._loading = False
             QApplication.restoreOverrideCursor()
 
     def _cleanup_workers(self) -> None:
         self._workers = [w for w in self._workers if w.isRunning()]
+        active_ids = {id(w) for w in self._workers}
+        for key in list(self._worker_meta):
+            if key not in active_ids:
+                self._worker_meta.pop(key, None)
+
+    def _create_worker(self, cmd: str, timeout: int, sudo_pw: Optional[str]) -> QThread:
+        if self._is_remote():
+            worker: QThread = RemoteExecThread(
+                self.profile,
+                cmd,
+                timeout=timeout,
+                sudo_password=sudo_pw,
+                parent=self,
+            )
+        else:
+            worker = LocalExecThread(
+                cmd,
+                timeout=timeout,
+                sudo_password=sudo_pw,
+                parent=self,
+            )
+        self._workers.append(worker)
+        worker.finished.connect(self._on_worker_thread_finished)
+        worker.finished_cmd.connect(self._on_worker_finished_cmd)
+        if hasattr(worker, "error"):
+            worker.error.connect(self._on_worker_error)
+        return worker
+
+    def _on_worker_thread_finished(self) -> None:
+        self._workers = [w for w in self._workers if w.isRunning()]
+        if not self._stopped and not self._workers:
+            self._set_loading(False)
+
+    def _on_worker_finished_cmd(self, out: str, rc: int) -> None:
+        if self._stopped:
+            return
+        worker = self.sender()
+        meta = self._worker_meta.pop(id(worker), None) if worker is not None else None
+        if not meta:
+            return
+
+        if meta.get("kind") == "section":
+            name = meta["name"]
+            if "sudo: a password is required" in out or "incorrect password attempt" in out:
+                self.services.clear_sudo_password(self.profile_name)
+            self._render(name, out, rc)
+            return
+
+        if meta.get("kind") == "custom":
+            self._set_loading(False)
+            title = meta.get("title", "Command")
+            callback = meta.get("callback")
+            refresh_after = meta.get("refresh_after", True)
+            target = self.profile_name if self._is_remote() else "Localhost"
+            if "sudo: a password is required" in out or "incorrect password attempt" in out:
+                self.services.clear_sudo_password(self.profile_name)
+                self.services.notifications.push(
+                    "error",
+                    f"{title} (Sudo Auth Failed)",
+                    "Root/sudo authentication failed. Invalid password.",
+                )
+            elif rc == 0:
+                self.services.notifications.push(
+                    "ok",
+                    title,
+                    f"Completed successfully on {target}",
+                )
+                self.services.audit("SYSADMIN", f"{title} succeeded on {target}")
+            else:
+                self.services.notifications.push(
+                    "error",
+                    f"{title} (exit {rc})",
+                    out.strip()[:200] or "Execution returned non-zero exit code",
+                )
+                self.services.emit_log("SYSADMIN", f"{title} failed (rc={rc}) on {target}: {out.strip()}", "ERROR")
+
+            if callback:
+                callback(out, rc)
+
+            if refresh_after:
+                self._refresh_current()
+
+    def _on_worker_error(self, msg: str) -> None:
+        if self._stopped:
+            return
+        worker = self.sender()
+        meta = self._worker_meta.pop(id(worker), None) if worker is not None else None
+        if meta and meta.get("name"):
+            self._handle_error(meta["name"], msg)
+
+    def stop_all_workers(self) -> None:
+        """Stop all active background workers cleanly before closing."""
+        self._stopped = True
+        self._set_loading(False)
+        for w in list(self._workers):
+            if hasattr(w, "stop"):
+                try:
+                    w.stop()
+                except Exception:
+                    pass
+            try:
+                w.quit()
+                if not w.wait(500):
+                    w.terminate()
+                    w.wait(300)
+            except Exception:
+                pass
+        self._workers.clear()
+        self._worker_meta.clear()
+
+    def closeEvent(self, event) -> None:
+        self.stop_all_workers()
+        super().closeEvent(event)
 
     def _refresh_current(self) -> None:
         item = self.nav.currentItem()
@@ -431,36 +577,13 @@ class SysAdminTab(QWidget):
         self._set_loading(True)
 
         # ---- Choose execution backend ----
-        if self._is_remote():
-            # SSH: pass profile dict as first positional arg
-            worker = RemoteExecThread(
-                self.profile,
-                cmd,
-                timeout=45,
-                sudo_password=sudo_pw,
-            )
-        else:
-            # Local: run via subprocess
-            worker = LocalExecThread(cmd, timeout=45, sudo_password=sudo_pw)
-
-        self._workers.append(worker)
-
-        def _on_section_done(out: str, rc: int, n=name):
-            if "sudo: a password is required" in out or "incorrect password attempt" in out:
-                self.services.clear_sudo_password(self.profile_name)
-            self._render(n, out, rc)
-
-        worker.finished_cmd.connect(_on_section_done)
-        worker.finished.connect(lambda: self._set_loading(False))
-
-        if hasattr(worker, "error"):
-            worker.error.connect(
-                lambda msg, n=name: self._handle_error(n, msg)
-            )
-
+        worker = self._create_worker(cmd, timeout=45, sudo_pw=sudo_pw)
+        self._worker_meta[id(worker)] = {"kind": "section", "name": name}
         worker.start()
 
     def _handle_error(self, name: str, msg: str) -> None:
+        if self._stopped:
+            return
         self.status.setText(f"{name} — Error")
         if name in self.raw_text_views:
             self.raw_text_views[name].setPlainText(
@@ -534,49 +657,13 @@ class SysAdminTab(QWidget):
         self.status.setText(f"Running {title}...")
         self._set_loading(True)
 
-        if self._is_remote():
-            worker = RemoteExecThread(
-                self.profile, final_cmd, timeout=timeout, sudo_password=sudo_pw
-            )
-        else:
-            worker = LocalExecThread(
-                final_cmd, timeout=timeout, sudo_password=sudo_pw
-            )
-
-        self._workers.append(worker)
-
-        def on_finished(out: str, rc: int) -> None:
-            self._set_loading(False)
-            target = self.profile_name if self._is_remote() else "Localhost"
-            if "sudo: a password is required" in out or "incorrect password attempt" in out:
-                self.services.clear_sudo_password(self.profile_name)
-                self.services.notifications.push(
-                    "error",
-                    f"{title} (Sudo Auth Failed)",
-                    "Root/sudo authentication failed. Invalid password.",
-                )
-            elif rc == 0:
-                self.services.notifications.push(
-                    "ok",
-                    title,
-                    f"Completed successfully on {target}",
-                )
-                self.services.audit("SYSADMIN", f"{title} succeeded on {target}")
-            else:
-                self.services.notifications.push(
-                    "error",
-                    f"{title} (exit {rc})",
-                    out.strip()[:200] or "Execution returned non-zero exit code",
-                )
-                self.services.emit_log("SYSADMIN", f"{title} failed (rc={rc}) on {target}: {out.strip()}", "ERROR")
-
-            if callback:
-                callback(out, rc)
-
-            if refresh_after:
-                self._refresh_current()
-
-        worker.finished_cmd.connect(on_finished)
+        worker = self._create_worker(final_cmd, timeout=timeout, sudo_pw=sudo_pw)
+        self._worker_meta[id(worker)] = {
+            "kind": "custom",
+            "title": title,
+            "callback": callback,
+            "refresh_after": refresh_after,
+        }
         worker.start()
 
     # ------------------------------------------------------------------

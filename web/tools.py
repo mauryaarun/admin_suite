@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from admin_suite.core.export import ReportExporter
+from admin_suite.core.fonts import mono_font
 
 
 class WebToolsWidget(QWidget):
@@ -114,7 +115,7 @@ class WebToolsWidget(QWidget):
         self.se_output = QPlainTextEdit()
         self.se_output.setReadOnly(True)
         self.se_output.setMaximumHeight(120)
-        self.se_output.setFont(QFont("JetBrains Mono, Consolas", 9))
+        self.se_output.setFont(mono_font(9))
         self.se_output.setPlaceholderText("SELinux status details and command logs...")
         ReportExporter.attach_export_context_menu(self.se_output)
         selinux_layout.addWidget(self.se_output)
@@ -146,7 +147,7 @@ class WebToolsWidget(QWidget):
 
         self.php_output = QPlainTextEdit()
         self.php_output.setReadOnly(True)
-        self.php_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.php_output.setFont(mono_font(10))
         self.php_output.setPlaceholderText("Inspects PHP CLI version, upload_max_filesize, memory_limit, extensions, and OPcache...")
         ReportExporter.attach_export_context_menu(self.php_output)
         php_layout.addWidget(self.php_output, 1)
@@ -178,7 +179,7 @@ class WebToolsWidget(QWidget):
 
         self.modules_output = QPlainTextEdit()
         self.modules_output.setReadOnly(True)
-        self.modules_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.modules_output.setFont(mono_font(10))
         self.modules_output.setPlaceholderText("Lists compiled Nginx modules (nginx -V) and loaded Apache modules (apache2ctl -M / httpd -M)...")
         ReportExporter.attach_export_context_menu(self.modules_output)
         modules_layout.addWidget(self.modules_output, 1)
@@ -217,7 +218,7 @@ class WebToolsWidget(QWidget):
 
         self.probe_output = QPlainTextEdit()
         self.probe_output.setReadOnly(True)
-        self.probe_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.probe_output.setFont(mono_font(10))
         self.probe_output.setPlaceholderText("HTTP Response headers, latency breakdown, and status codes will appear here...")
         ReportExporter.attach_export_context_menu(self.probe_output)
         probe_layout.addWidget(self.probe_output, 1)
@@ -253,7 +254,7 @@ class WebToolsWidget(QWidget):
 
         self.perm_output = QPlainTextEdit()
         self.perm_output.setReadOnly(True)
-        self.perm_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.perm_output.setFont(mono_font(10))
         self.perm_output.setPlaceholderText("Permission fix execution logs will appear here...")
         perm_layout.addWidget(self.perm_output, 1)
 
@@ -286,7 +287,7 @@ class WebToolsWidget(QWidget):
 
         self.dns_output = QPlainTextEdit()
         self.dns_output.setReadOnly(True)
-        self.dns_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.dns_output.setFont(mono_font(10))
         self.dns_output.setPlaceholderText("A, AAAA, MX, and TXT DNS records resolution output...")
         ReportExporter.attach_export_context_menu(self.dns_output)
         dns_layout.addWidget(self.dns_output, 1)
@@ -319,7 +320,7 @@ class WebToolsWidget(QWidget):
 
         self.syntax_output = QPlainTextEdit()
         self.syntax_output.setReadOnly(True)
-        self.syntax_output.setFont(QFont("JetBrains Mono, Consolas", 10))
+        self.syntax_output.setFont(mono_font(10))
         self.syntax_output.setPlaceholderText("Validates syntax for Nginx, Apache2 / HTTPD, and Caddy...")
         ReportExporter.attach_export_context_menu(self.syntax_output)
         syntax_layout.addWidget(self.syntax_output, 1)
